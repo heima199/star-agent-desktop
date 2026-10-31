@@ -1,7 +1,11 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$ArtifactsDir,
-  [ValidateSet('x64')][string]$Arch = 'x64'
+  [ValidateSet('x64')][string]$Arch = 'x64',
+  # How long one silent install, reinstall or uninstall may take. An installer
+  # that bundles the STAR Code IDE (about 11,000 more files) needs longer than
+  # the 180 seconds a plain installer gets.
+  [ValidateRange(30, 3600)][int]$InstallTimeoutSeconds = 180
 )
 
 Set-StrictMode -Version Latest
@@ -55,7 +59,7 @@ function Invoke-ProcessExpectFailure {
     [Parameter(Mandatory = $true)][string]$Stage,
     [Parameter(Mandatory = $true)][string[]]$Arguments,
     [int]$ExpectedExitCode,
-    [int]$TimeoutSeconds = 180
+    [int]$TimeoutSeconds = $InstallTimeoutSeconds
   )
 
   [Console]::Out.WriteLine("$Stage starting...")
@@ -88,16 +92,18 @@ function Invoke-CheckedProcess {
     [Parameter(Mandatory = $true)][string]$FilePath,
     [Parameter(Mandatory = $true)][string]$Stage,
     [Parameter(Mandatory = $true)][string[]]$Arguments,
-    [int]$TimeoutSeconds = 180
+    [int]$TimeoutSeconds = $InstallTimeoutSeconds
   )
 
   [Console]::Out.WriteLine("$Stage starting...")
+  $watch = [Diagnostics.Stopwatch]::StartNew()
   $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru
   try {
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
       Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
       throw "$Stage timed out after $TimeoutSeconds seconds."
     }
+    [Console]::Out.WriteLine("$Stage took $([int]$watch.Elapsed.TotalSeconds) seconds.")
     if ($process.ExitCode -ne 0) {
       throw "$Stage failed with process exit code $($process.ExitCode)."
     }

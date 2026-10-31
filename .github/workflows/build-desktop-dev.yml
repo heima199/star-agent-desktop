@@ -261,11 +261,14 @@ jobs:
         # Quoted: unquoted, PowerShell splits the argument at the first dot.
         run: node ./node_modules/electron-builder/out/cli/cli.js ${{ matrix.builder_args }} --publish never '-c.mac.notarize=false'
 
+      # The installer carries the STAR Code IDE (about 11,000 files), so one
+      # silent install takes longer than the script's 180-second default, and
+      # the smoke runs several installs and reinstalls.
       - name: Verify Windows installer execution
         if: matrix.smoke_platform == 'windows' && matrix.arch == 'x64'
-        timeout-minutes: 10
+        timeout-minutes: 45
         working-directory: desktop
-        run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-installer-smoke.ps1 -ArtifactsDir ./build-artifacts/electron -Arch x64
+        run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-installer-smoke.ps1 -ArtifactsDir ./build-artifacts/electron -Arch x64 -InstallTimeoutSeconds 900
 
       - name: Verify packaged app structure
         run: bun run test:package-smoke --platform ${{ matrix.smoke_platform }} --arch ${{ matrix.arch }} --package-kind release --artifacts-dir desktop/build-artifacts/electron ${{ matrix.smoke_platform == 'linux' && '--max-linux-glibc 2.28' || '' }}
