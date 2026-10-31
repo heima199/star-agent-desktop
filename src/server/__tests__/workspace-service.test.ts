@@ -1,0 +1,999 @@
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test'
+import * as fs from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { ApiError } from '../middleware/errorHandler.js'
+import { WorkspaceService } from '../services/workspaceService.js'
+import { WORKSPACE_DOCUMENT_FORMATS } from '../services/workspaceDocumentPreview.js'
+import {
+  clearFilesystemAccessRootsForTests,
+  registerFilesystemAccessRoot,
+} from '../services/filesystemAccessRoots.js'
+
+const cleanupDirs = new Set<string>()
+const ONE_MIB = 1024 * 1024
+
+function trackDir(dir: string): string {
+  cleanupDirs.add(dir)
+  return dir
+}
+
+async function makeTempDir(prefix: string): Promise<string> {
+  return trackDir(await fs.mkdtemp(path.join(os.tmpdir(), prefix)))
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+  })
+}
+
+async function createGitWorkspace(): Promise<string> {
+  const repoDir = await makeTempDir('workspace-service-git-')
+
+  git(repoDir, 'init')
+  git(repoDir, 'config', 'user.email', 'workspace-service@example.com')
+  git(repoDir, 'config', 'user.name', 'Workspace Service')
+
+  await fs.writeFile(path.join(repoDir, 'tracked.txt'), 'before\n')
+  await fs.writeFile(path.join(repoDir, 'deleted.txt'), 'delete me\n')
+  await fs.writeFile(path.join(repoDir, 'clean.txt'), 'clean\n')
+  git(repoDir, 'add', 'tracked.txt', 'deleted.txt', 'clean.txt')
+  git(repoDir, 'commit', '-m', 'initial')
+
+  await fs.writeFile(path.join(repoDir, 'tracked.txt'), 'before\nafter\n')
+  await fs.writeFile(path.join(repoDir, 'new.txt'), 'new file\n')
+  git(repoDir, 'add', 'new.txt')
+  await fs.unlink(path.join(repoDir, 'deleted.txt'))
+  await fs.writeFile(path.join(repoDir, 'untracked.txt'), 'still untracked\n')
+
+  return repoDir
+}
+
+async function createNestedGitWorkspace(): Promise<{
+  repoDir: string
+  workDir: string
+}> {
+  const repoDir = await makeTempDir('workspace-service-nested-git-')
+  const workDir = path.join(repoDir, 'subdir')
+
+  git(repoDir, 'init')
+  git(repoDir, 'config', 'user.email', 'workspace-service@example.com')
+  git(repoDir, 'config', 'user.name', 'Workspace Service')
+
+  await fs.mkdir(workDir)
+  await fs.writeFile(path.join(repoDir, 'root.txt'), 'root original\n')
+  await fs.writeFile(path.join(workDir, 'sub.txt'), 'sub original\n')
+  git(repoDir, 'add', 'root.txt', 'subdir/sub.txt')
+  git(repoDir, 'commit', '-m', 'initial')
+
+  await fs.writeFile(path.join(repoDir, 'root.txt'), 'root original\nroot changed\n')
+  await fs.writeFile(path.join(workDir, 'sub.txt'), 'sub original\nsub changed\n')
+
+  return { repoDir, workDir }
+}
+
+afterEach(async () => {
+  for (const dir of cleanupDirs) {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+  cleanupDirs.clear()
+})
+
+describe('WorkspaceService outside-workspace preview', () => {
+  // Cleared going in as well as coming out. The registry is one module-level Set that
+  // every test file in the process shares, and these tests open by asserting a path is
+  // *not* reachable — a precondition they cannot assume, only establish. In a full run
+  // they inherited the entire macOS temp root: title-service.test.ts:463 and
+  // sessions.test.ts:2860 both create a session on the bare os.tmpdir(), and
+  // registering a session's workDir is exactly what sessionService is supposed to do.
+  // So every path under /var/folders/.../T was already allowed by the time this file
+  // ran, and the "outside workspace" assertion failed. Matches the pairing that
+  // filesystemAccessRoots.test.ts and h5-access-auth.test.ts already use.
+  beforeEach(() => {
+    clearFilesystemAccessRootsForTests()
+  })
+
+  afterEach(() => {
+    clearFilesystemAccessRootsForTests()
+  })
+
+  it('rejects a file outside the workdir until its dir is a registered access root, then reads it', async () => {
+    const workDir = await makeTempDir('workspace-service-work-')
+    const outsideDir = await makeTempDir('workspace-service-outside-')
+    const outsideFile = path.join(outsideDir, 'todo.html')
+    await fs.writeFile(outsideFile, '<h1>hi</h1>\n')
+
+    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? workDir : null)
+
+    // Not registered yet → treated as a sandbox escape.
+    await expect(service.readFile('session-1', outsideFile)).rejects.toThrow(/outside workspace/)
+
+    // Registered (as the turn-checkpoint flow does for changed files) → readable.
+    registerFilesystemAccessRoot(outsideDir)
+    const allowed = await service.readFile('session-1', outsideFile)
+    expect(allowed.state).toBe('ok')
+    expect(allowed.content).toContain('<h1>hi</h1>')
+  })
+
+  it('still rejects an unrelated path even when another outside dir is registered', async () => {
+    const workDir = await makeTempDir('workspace-service-work-')
+    const registeredDir = await makeTempDir('workspace-service-reg-')
+    const unrelatedDir = await makeTempDir('workspace-service-unrelated-')
+    const unrelatedFile = path.join(unrelatedDir, 'secret.txt')
+    await fs.writeFile(unrelatedFile, 'nope\n')
+    registerFilesystemAccessRoot(registeredDir)
+
+    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? workDir : null)
+
+    await expect(service.readFile('session-1', unrelatedFile)).rejects.toThrow(/outside workspace/)
+  })
+
+  it('does not allow relative traversal through a registered outside dir', async () => {
+    const baseDir = await makeTempDir('workspace-service-base-')
+    const workDir = path.join(baseDir, 'work')
+    const outsideFile = path.join(baseDir, 'outside.txt')
+    await fs.mkdir(workDir)
+    await fs.writeFile(outsideFile, 'secret\n')
+    registerFilesystemAccessRoot(baseDir)
+
+    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? workDir : null)
+
+    await expect(service.readFile('session-1', '../outside.txt')).rejects.toThrow(/outside workspace/)
+  })
+})
+
+describe('WorkspaceService.statFiles', () => {
+  beforeEach(() => {
+    clearFilesystemAccessRootsForTests()
+  })
+
+  afterEach(() => {
+    clearFilesystemAccessRootsForTests()
+  })
+
+  it('reports each path as a written file, missing, or out of bounds, in request order', async () => {
+    const workDir = await makeTempDir('workspace-service-stat-')
+    const outsideDir = await makeTempDir('workspace-service-stat-outside-')
+    await fs.mkdir(path.join(workDir, 'out'))
+    await fs.writeFile(path.join(workDir, 'out', '报告.docx'), 'docx')
+    const writtenAt = new Date('2026-10-04T08:00:05Z')
+    await fs.utimes(path.join(workDir, 'out', '报告.docx'), writtenAt, writtenAt)
+    await fs.writeFile(path.join(outsideDir, 'secret.docx'), 'nope')
+    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? workDir : null)
+
+    const stats = await service.statFiles('session-1', [
+      'out/报告.docx',
+      'out/missing.docx',
+      'out',
+      path.join(outsideDir, 'secret.docx'),
+      '../escape.docx',
+    ])
+
+    expect(stats).toEqual([
+      { path: 'out/报告.docx', state: 'file', mtimeMs: writtenAt.getTime() },
+      { path: 'out/missing.docx', state: 'missing' },
+      // A directory is not an output file.
+      { path: 'out', state: 'missing' },
+      // The file route would refuse these too, so their existence is not told.
+      { path: path.join(outsideDir, 'secret.docx'), state: 'unavailable' },
+      { path: '../escape.docx', state: 'unavailable' },
+    ])
+  })
+
+  it('stats a file outside the workdir once it is a registered access root', async () => {
+    const workDir = await makeTempDir('workspace-service-stat-')
+    const outsideDir = await makeTempDir('workspace-service-stat-outside-')
+    const outsideFile = path.join(outsideDir, 'report.pdf')
+    await fs.writeFile(outsideFile, 'pdf')
+    registerFilesystemAccessRoot(outsideDir)
+    const service = new WorkspaceService(async () => workDir)
+
+    const [stat] = await service.statFiles('session-1', [outsideFile])
+
+    expect(stat).toMatchObject({ path: outsideFile, state: 'file' })
+    expect(typeof stat?.mtimeMs).toBe('number')
+  })
+})
+
+describe('WorkspaceService', () => {
+  it('surfaces bounded transcript failures instead of reporting a clean workspace', async () => {
+    const workDir = await makeTempDir('workspace-history-budget-')
+    const failure = new ApiError(413, 'History viewing budget exceeded', 'HISTORY_WORKSPACE_LIMIT')
+    const messages = new WorkspaceService(async () => workDir, async () => { throw failure })
+    const snapshots = new WorkspaceService(async () => workDir, async () => [], async () => { throw failure })
+    await expect(messages.getStatus('session')).rejects.toBe(failure)
+    await expect(snapshots.getStatus('session')).rejects.toBe(failure)
+  })
+
+  it('keeps authoritative git status when bounded session evidence exceeds its budget', async () => {
+    const repoDir = await createGitWorkspace()
+    const failure = new ApiError(413, 'History viewing budget exceeded', 'HISTORY_WORKSPACE_LIMIT')
+    const services = [
+      new WorkspaceService(async () => repoDir, async () => { throw failure }),
+      new WorkspaceService(async () => repoDir, async () => [], async () => { throw failure }),
+    ]
+    for (const service of services) {
+      const result = await service.getStatus('session')
+      expect(result.state).toBe('ok')
+      expect(result.changedFiles.map((file) => file.path).sort()).toEqual(
+        ['deleted.txt', 'new.txt', 'tracked.txt', 'untracked.txt'],
+      )
+    }
+  })
+
+  it('returns git status for modified, added, deleted, and untracked files', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? repoDir : null)
+
+    const result = await service.getStatus('session-1')
+
+    expect(result.state).toBe('ok')
+    expect(result.workDir).toBe(repoDir)
+    expect(result.isGitRepo).toBe(true)
+    expect(result.repoName).toBe(path.basename(repoDir))
+    expect(result.branch).toBeTruthy()
+
+    const files = new Map(result.changedFiles.map((file) => [file.path, file]))
+    expect(Array.from(files.keys()).sort()).toEqual([
+      'deleted.txt',
+      'new.txt',
+      'tracked.txt',
+      'untracked.txt',
+    ])
+    expect(files.get('tracked.txt')?.status).toBe('modified')
+    expect(files.get('tracked.txt')?.additions).toBeGreaterThan(0)
+    expect(files.get('new.txt')?.status).toBe('added')
+    expect(files.get('new.txt')?.additions).toBeGreaterThan(0)
+    expect(files.get('deleted.txt')?.status).toBe('deleted')
+    expect(files.get('deleted.txt')?.deletions).toBeGreaterThan(0)
+    expect(files.get('untracked.txt')).toMatchObject({
+      status: 'untracked',
+      additions: 1,
+      deletions: 0,
+    })
+  })
+
+  it('scopes git status and diff paths to a nested workDir inside a repo', async () => {
+    const { repoDir, workDir } = await createNestedGitWorkspace()
+    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? workDir : null)
+
+    const status = await service.getStatus('session-1')
+
+    expect(status.state).toBe('ok')
+    expect(status.workDir).toBe(workDir)
+    expect(status.repoName).toBe(path.basename(repoDir))
+    expect(status.changedFiles).toHaveLength(1)
+    expect(status.changedFiles[0]).toMatchObject({
+      path: 'sub.txt',
+      status: 'modified',
+    })
+    expect(status.changedFiles[0]?.additions).toBeGreaterThan(0)
+    expect(status.changedFiles[0]?.deletions).toBeGreaterThanOrEqual(0)
+    expect(status.changedFiles.some((file) => file.path === 'root.txt')).toBe(false)
+
+    const diff = await service.getDiff('session-1', 'sub.txt')
+    expect(diff.state).toBe('ok')
+    expect(diff.diff).toContain('subdir/sub.txt')
+    expect(diff.diff?.length).toBeGreaterThan(0)
+  })
+
+  it('prefers the live git diff over stale transcript edits for a currently changed file', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(
+      async (sessionId) => sessionId === 'session-1' ? repoDir : null,
+      async () => [{
+        id: 'assistant-1',
+        type: 'tool_use',
+        timestamp: new Date().toISOString(),
+        content: [{
+          type: 'tool_use',
+          name: 'Edit',
+          input: {
+            file_path: 'tracked.txt',
+            old_string: 'before\n',
+            new_string: 'model snapshot\n',
+          },
+        }],
+      }],
+    )
+
+    const diff = await service.getDiff('session-1', 'tracked.txt')
+
+    expect(diff.state).toBe('ok')
+    expect(diff.diff).toContain('diff --git a/tracked.txt b/tracked.txt')
+    expect(diff.diff).toContain('+after')
+    expect(diff.diff).not.toContain('+model snapshot')
+  })
+
+  it('returns explicit non-git and missing-workdir states', async () => {
+    const nonGitDir = await makeTempDir('workspace-service-non-git-')
+    const missingDir = path.join(await makeTempDir('workspace-service-missing-parent-'), 'missing')
+    const service = new WorkspaceService(async (sessionId) => {
+      if (sessionId === 'non-git') return nonGitDir
+      if (sessionId === 'missing') return missingDir
+      return null
+    })
+
+    await expect(service.getStatus('unknown')).rejects.toThrow('Session not found: unknown')
+
+    await expect(service.getStatus('non-git')).resolves.toMatchObject({
+      state: 'ok',
+      workDir: nonGitDir,
+      repoName: path.basename(nonGitDir),
+      isGitRepo: false,
+      changedFiles: [],
+    })
+
+    await expect(service.getStatus('missing')).resolves.toMatchObject({
+      state: 'missing_workdir',
+      workDir: missingDir,
+      isGitRepo: false,
+      changedFiles: [],
+    })
+  })
+
+  it('reports session tool edits without requiring a git repository', async () => {
+    const nonGitDir = await makeTempDir('workspace-service-session-changes-')
+    await fs.mkdir(path.join(nonGitDir, 'src'))
+    await fs.writeFile(path.join(nonGitDir, 'src/App.jsx'), 'export default function App() { return <main>New</main> }\n')
+
+    const service = new WorkspaceService(
+      async () => nonGitDir,
+      async () => [{
+        id: 'assistant-1',
+        type: 'tool_use',
+        timestamp: new Date().toISOString(),
+        content: [{
+          type: 'tool_use',
+          name: 'Edit',
+          input: {
+            file_path: 'src/App.jsx',
+            old_string: 'export default function App() { return <main>Old</main> }\n',
+            new_string: 'export default function App() { return <main>New</main> }\n',
+          },
+        }],
+      }],
+    )
+
+    const status = await service.getStatus('session-1')
+
+    expect(status).toMatchObject({
+      state: 'ok',
+      workDir: nonGitDir,
+      isGitRepo: false,
+      changedFiles: [{
+        path: 'src/App.jsx',
+        status: 'modified',
+        additions: 1,
+        deletions: 1,
+      }],
+    })
+
+    const diff = await service.getDiff('session-1', 'src/App.jsx')
+    expect(diff.state).toBe('ok')
+    expect(diff.diff).toContain('diff --session a/src/App.jsx b/src/App.jsx')
+    expect(diff.diff).toContain('-export default function App() { return <main>Old</main> }')
+    expect(diff.diff).toContain('+export default function App() { return <main>New</main> }')
+  })
+
+  it('does not report a rejected session tool edit as a changed file', async () => {
+    const nonGitDir = await makeTempDir('workspace-service-rejected-change-')
+    const toolUseId = 'Write:rejected'
+    const service = new WorkspaceService(
+      async () => nonGitDir,
+      async () => [
+        {
+          id: 'assistant-1',
+          type: 'tool_use',
+          timestamp: new Date().toISOString(),
+          content: [{
+            type: 'tool_use',
+            id: toolUseId,
+            name: 'Write',
+            input: {
+              file_path: 'permission-denial-test.txt',
+              content: 'must not be written\n',
+            },
+          }],
+        },
+        {
+          id: 'tool-result-1',
+          type: 'tool_result',
+          timestamp: new Date().toISOString(),
+          content: [{
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content: 'The user rejected this tool use.',
+            is_error: true,
+          }],
+        },
+      ],
+    )
+
+    const status = await service.getStatus('session-1')
+
+    expect(status).toMatchObject({
+      state: 'ok',
+      workDir: nonGitDir,
+      isGitRepo: false,
+      changedFiles: [],
+    })
+  })
+
+  it('reports file-history changes without requiring a git repository', async () => {
+    const nonGitDir = await makeTempDir('workspace-service-file-history-')
+    const generatedFile = path.join(nonGitDir, 'aacc', 'src', 'App.tsx')
+    await fs.mkdir(path.dirname(generatedFile), { recursive: true })
+    await fs.writeFile(generatedFile, 'export default function App() { return <main>Tetris</main> }\n')
+
+    const service = new WorkspaceService(
+      async () => nonGitDir,
+      async () => [],
+      async () => [{
+        messageId: '11111111-1111-4111-8111-111111111111',
+        timestamp: new Date('2026-01-01T00:00:00.000Z'),
+        trackedFileBackups: {
+          'aacc/src/App.tsx': {
+            backupFileName: null,
+            version: 1,
+            backupTime: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        },
+      }],
+    )
+
+    const status = await service.getStatus('session-1')
+
+    expect(status).toMatchObject({
+      state: 'ok',
+      workDir: nonGitDir,
+      isGitRepo: false,
+      changedFiles: [{
+        path: 'aacc/src/App.tsx',
+        status: 'added',
+        additions: 1,
+        deletions: 0,
+      }],
+    })
+
+    const diff = await service.getDiff('session-1', 'aacc/src/App.tsx')
+    expect(diff.state).toBe('ok')
+    expect(diff.diff).toContain('diff --session /dev/null b/aacc/src/App.tsx')
+    expect(diff.diff).toContain('+export default function App() { return <main>Tetris</main> }')
+  })
+
+  it('matches Windows file-history paths case-insensitively inside the workspace', async () => {
+    if (process.platform !== 'win32') return
+
+    const nonGitDir = await makeTempDir('workspace-service-windows-paths-')
+    const targetFile = path.join(nonGitDir, 'Child', 'index.ts')
+    await fs.mkdir(path.dirname(targetFile), { recursive: true })
+    await fs.writeFile(targetFile, 'export const value = 1\n')
+
+    const lowerDrivePath = targetFile[0]?.toLowerCase() + targetFile.slice(1)
+    const service = new WorkspaceService(
+      async () => nonGitDir,
+      async () => [],
+      async () => [{
+        messageId: '22222222-2222-4222-8222-222222222222',
+        timestamp: new Date('2026-01-01T00:00:00.000Z'),
+        trackedFileBackups: {
+          [lowerDrivePath]: {
+            backupFileName: null,
+            version: 1,
+            backupTime: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        },
+      }],
+    )
+
+    const status = await service.getStatus('session-1')
+
+    expect(status.changedFiles).toEqual([{
+      path: 'Child/index.ts',
+      oldPath: undefined,
+      status: 'added',
+      additions: 1,
+      deletions: 0,
+    }])
+  })
+
+  it('rejects traversal attempts for file, diff, and tree access', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(async () => repoDir)
+
+    await expect(service.readFile('session-1', '../outside.txt')).rejects.toThrow(/outside workspace/)
+    await expect(service.getDiff('session-1', '../outside.txt')).resolves.toMatchObject({
+      state: 'error',
+      path: '../outside.txt',
+    })
+    await expect(service.readTree('session-1', '../outside')).rejects.toThrow(/outside workspace/)
+  })
+
+  it('rejects symlink targets that escape the workspace root', async () => {
+    const workDir = await makeTempDir('workspace-service-symlink-')
+    const outsideDir = await makeTempDir('workspace-service-symlink-outside-')
+    const outsideFile = path.join(outsideDir, 'secret.txt')
+    await fs.writeFile(outsideFile, 'top secret\n')
+    await fs.symlink(outsideFile, path.join(workDir, 'escape.txt'))
+
+    const service = new WorkspaceService(async () => workDir)
+
+    await expect(service.readFile('session-1', 'escape.txt')).rejects.toThrow(/outside workspace/)
+  })
+
+  it('returns error for an untracked symlink that escapes the workspace root', async () => {
+    const repoDir = await makeTempDir('workspace-service-symlink-git-')
+    const outsideDir = await makeTempDir('workspace-service-symlink-git-outside-')
+    const outsideFile = path.join(outsideDir, 'secret.txt')
+
+    git(repoDir, 'init')
+    git(repoDir, 'config', 'user.email', 'workspace-service@example.com')
+    git(repoDir, 'config', 'user.name', 'Workspace Service')
+    await fs.writeFile(path.join(repoDir, 'tracked.txt'), 'tracked\n')
+    git(repoDir, 'add', 'tracked.txt')
+    git(repoDir, 'commit', '-m', 'initial')
+
+    await fs.writeFile(outsideFile, 'top secret\n')
+    await fs.symlink(outsideFile, path.join(repoDir, 'escape.txt'))
+
+    const service = new WorkspaceService(async () => repoDir)
+
+    const status = await service.getStatus('session-1')
+    expect(status.state).toBe('error')
+    expect(status.error).toMatch(/outside workspace/)
+
+    await expect(service.getDiff('session-1', 'escape.txt')).resolves.toMatchObject({
+      state: 'error',
+      path: 'escape.txt',
+    })
+    const diffOutcome = await service.getDiff('session-1', 'escape.txt')
+    expect(diffOutcome.error).toMatch(/outside workspace/)
+  })
+
+  it('returns explicit readFile states for text, binary, large, and missing targets', async () => {
+    const workDir = await makeTempDir('workspace-service-files-')
+    const service = new WorkspaceService(async () => workDir)
+
+    await fs.writeFile(path.join(workDir, 'note.ts'), 'export const answer = 42\n')
+    await fs.writeFile(path.join(workDir, 'binary.bin'), Buffer.from([0, 1, 2, 3]))
+    await fs.writeFile(path.join(workDir, 'image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]))
+    await fs.writeFile(
+      path.join(workDir, 'large-image.png'),
+      Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(ONE_MIB + 1, 0xff)]),
+    )
+    await fs.writeFile(path.join(workDir, 'large.txt'), Buffer.alloc(ONE_MIB + 1, 'a'))
+    await fs.mkdir(path.join(workDir, 'folder'))
+
+    await expect(service.readFile('session-1', 'note.ts')).resolves.toMatchObject({
+      state: 'ok',
+      language: 'typescript',
+      size: 25,
+      content: 'export const answer = 42\n',
+    })
+    await expect(service.readFile('session-1', 'binary.bin')).resolves.toMatchObject({
+      state: 'binary',
+      language: 'binary',
+      size: 4,
+    })
+    await expect(service.readFile('session-1', 'image.png')).resolves.toMatchObject({
+      state: 'ok',
+      previewType: 'image',
+      language: 'image',
+      mimeType: 'image/png',
+      dataUrl: 'data:image/png;base64,iVBORwA=',
+      size: 5,
+    })
+    const largeImage = await service.readFile('session-1', 'large-image.png')
+    expect(largeImage).toMatchObject({
+      state: 'ok',
+      previewType: 'image',
+      language: 'image',
+      mimeType: 'image/png',
+      size: ONE_MIB + 5,
+    })
+    expect(largeImage.dataUrl).toStartWith('data:image/png;base64,')
+    await expect(service.readFile('session-1', 'large.txt')).resolves.toMatchObject({
+      state: 'ok',
+      previewType: 'text',
+      language: 'text',
+      size: ONE_MIB + 1,
+      readBytes: ONE_MIB,
+      truncated: true,
+      content: 'a'.repeat(ONE_MIB),
+    })
+    await expect(service.readFile('session-1', 'missing.txt')).resolves.toMatchObject({
+      state: 'missing',
+    })
+    await expect(service.readFile('session-1', 'folder')).resolves.toMatchObject({
+      state: 'missing',
+    })
+  })
+
+  it('lists a single directory level with dotfiles included and directories first', async () => {
+    const workDir = await makeTempDir('workspace-service-tree-')
+    const service = new WorkspaceService(async () => workDir)
+
+    await fs.mkdir(path.join(workDir, '.hidden-dir'))
+    await fs.mkdir(path.join(workDir, '.git'))
+    await fs.mkdir(path.join(workDir, 'b-dir'))
+    await fs.mkdir(path.join(workDir, 'a-dir'))
+    await fs.mkdir(path.join(workDir, 'a-dir', 'inner'))
+    await fs.writeFile(path.join(workDir, 'a-dir', 'note.txt'), 'nested\n')
+    await fs.writeFile(path.join(workDir, 'z-file.txt'), 'root file\n')
+    await fs.writeFile(path.join(workDir, '.hidden.txt'), 'ignore\n')
+
+    await expect(service.readTree('session-1')).resolves.toMatchObject({
+      state: 'ok',
+      path: '',
+      entries: [
+        { name: '.hidden-dir', path: '.hidden-dir', isDirectory: true },
+        { name: 'a-dir', path: 'a-dir', isDirectory: true },
+        { name: 'b-dir', path: 'b-dir', isDirectory: true },
+        { name: '.hidden.txt', path: '.hidden.txt', isDirectory: false },
+        { name: 'z-file.txt', path: 'z-file.txt', isDirectory: false },
+      ],
+    })
+
+    await expect(service.readTree('session-1', 'a-dir')).resolves.toMatchObject({
+      state: 'ok',
+      path: 'a-dir',
+      entries: [
+        { name: 'inner', path: 'a-dir/inner', isDirectory: true },
+        { name: 'note.txt', path: 'a-dir/note.txt', isDirectory: false },
+      ],
+    })
+  })
+
+  it('returns diffs for modified, added, deleted, and untracked files', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? repoDir : null)
+
+    const modified = await service.getDiff('session-1', 'tracked.txt')
+    expect(modified.state).toBe('ok')
+    expect(modified.diff).toContain('tracked.txt')
+    expect(modified.diff.length).toBeGreaterThan(0)
+
+    const added = await service.getDiff('session-1', 'new.txt')
+    expect(added.state).toBe('ok')
+    expect(added.diff).toContain('new.txt')
+    expect(added.diff.length).toBeGreaterThan(0)
+
+    const deleted = await service.getDiff('session-1', 'deleted.txt')
+    expect(deleted.state).toBe('ok')
+    expect(deleted.diff).toContain('deleted.txt')
+    expect(deleted.diff.length).toBeGreaterThan(0)
+
+    const untracked = await service.getDiff('session-1', 'untracked.txt')
+    expect(untracked.state).toBe('ok')
+    expect(untracked.diff).toContain('untracked.txt')
+    expect(untracked.diff.length).toBeGreaterThan(0)
+
+    await expect(service.getDiff('session-1', 'clean.txt')).resolves.toMatchObject({
+      state: 'missing',
+      path: 'clean.txt',
+    })
+
+    const nonGitDir = await makeTempDir('workspace-service-diff-non-git-')
+    const nonGitService = new WorkspaceService(async () => nonGitDir)
+    await expect(nonGitService.getDiff('session-1', 'whatever.txt')).resolves.toMatchObject({
+      state: 'not_git_repo',
+      path: 'whatever.txt',
+    })
+  })
+
+  it('returns explicit error state when git status fails instead of ok-empty', async () => {
+    const repoDir = await createGitWorkspace()
+    const service = new WorkspaceService(async () => repoDir) as WorkspaceService & {
+      runGit: (workDir: string, args: string[]) => Promise<{
+        stdout: string
+        stderr: string
+        code: number
+      }>
+    }
+
+    service.runGit = async (workDir, args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
+        return { stdout: `${workDir}\n`, stderr: '', code: 0 }
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+        return { stdout: 'main\n', stderr: '', code: 0 }
+      }
+      if (args[0] === 'status') {
+        return { stdout: '', stderr: 'fatal: synthetic git failure', code: 1 }
+      }
+      return { stdout: '', stderr: 'unexpected call', code: 1 }
+    }
+
+    await expect(service.getStatus('session-1')).resolves.toMatchObject({
+      state: 'error',
+      isGitRepo: true,
+    })
+
+    const result = await service.getStatus('session-1')
+    expect(result.state).toBe('error')
+    expect(result.changedFiles).toEqual([])
+    expect(result.error).toContain('Failed to read git status')
+    expect(result.error).toContain('synthetic git failure')
+  })
+
+  it('reads tracked diff stats in one bulk git call', async () => {
+    const repoDir = await makeTempDir('workspace-service-bulk-stats-')
+    await fs.writeFile(path.join(repoDir, 'a.txt'), 'a\n')
+    await fs.writeFile(path.join(repoDir, 'b.txt'), 'b\n')
+    const diffStatCalls: string[][] = []
+    const service = new WorkspaceService(async () => repoDir) as WorkspaceService & {
+      runGit: (workDir: string, args: string[]) => Promise<{
+        stdout: string
+        stderr: string
+        code: number
+      }>
+    }
+
+    service.runGit = async (_workDir, args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
+        return { stdout: `${repoDir}\n`, stderr: '', code: 0 }
+      }
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+        return { stdout: 'main\n', stderr: '', code: 0 }
+      }
+      if (args[0] === 'status') {
+        return { stdout: ' M a.txt\0 M b.txt\0', stderr: '', code: 0 }
+      }
+      if (args[0] === 'diff' && args.includes('--numstat')) {
+        diffStatCalls.push(args)
+        return { stdout: '1\t0\ta.txt\n2\t3\tb.txt\n', stderr: '', code: 0 }
+      }
+      return { stdout: '', stderr: `unexpected git call: ${args.join(' ')}`, code: 1 }
+    }
+
+    const result = await service.getStatus('session-1')
+
+    expect(result.state).toBe('ok')
+    expect(diffStatCalls).toHaveLength(1)
+    expect(result.changedFiles).toEqual([
+      { path: 'a.txt', oldPath: undefined, status: 'modified', additions: 1, deletions: 0 },
+      { path: 'b.txt', oldPath: undefined, status: 'modified', additions: 2, deletions: 3 },
+    ])
+  })
+})
+
+describe('WorkspaceService document previews', () => {
+  // Same shared-registry hazard as the outside-workspace suite above.
+  beforeEach(() => {
+    clearFilesystemAccessRootsForTests()
+  })
+
+  afterEach(() => {
+    clearFilesystemAccessRootsForTests()
+  })
+
+  it.each([
+    ['report.pdf', 'pdf', 'application/pdf'],
+    ['thesis.DOCX', 'docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['data.xlsx', 'xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['macro.xlsm', 'xlsx', 'application/vnd.ms-excel.sheet.macroEnabled.12'],
+    ['legacy.XLS', 'xlsx', 'application/vnd.ms-excel'],
+    ['results.csv', 'xlsx', 'text/csv'],
+    ['results.TSV', 'xlsx', 'text/tab-separated-values'],
+  ])('classifies %s as a %s document and does not ship its bytes', async (name, previewType, mimeType) => {
+    const workDir = await makeTempDir('workspace-service-docs-')
+    const service = new WorkspaceService(async () => workDir)
+    await fs.writeFile(path.join(workDir, name), Buffer.from([0x50, 0x4b, 0x00, 0x04, 0xff]))
+
+    const result = await service.readFile('session-1', name)
+
+    expect(result).toMatchObject({
+      state: 'ok',
+      path: name,
+      previewType,
+      mimeType,
+      language: previewType,
+      size: 5,
+    })
+    expect(result.version).toBeString()
+    expect(result.content).toBeUndefined()
+    expect(result.dataUrl).toBeUndefined()
+  })
+
+  it('classifies a PDF with no NUL byte in its head as a document, not as text', async () => {
+    // The NUL sniff used to be the only gate, so a small PDF whose first MiB was
+    // plain ASCII came back as `previewType: 'text'` and rendered as garbage.
+    const workDir = await makeTempDir('workspace-service-docs-')
+    const service = new WorkspaceService(async () => workDir)
+    await fs.writeFile(
+      path.join(workDir, 'ascii.pdf'),
+      '%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n',
+    )
+
+    const result = await service.readFile('session-1', 'ascii.pdf')
+
+    expect(result.previewType).toBe('pdf')
+    expect(result.content).toBeUndefined()
+  })
+
+  it('classifies a document without reading or opening it', async () => {
+    const workDir = await makeTempDir('workspace-service-docs-')
+    const service = new WorkspaceService(async () => workDir)
+    await fs.writeFile(path.join(workDir, 'big.pdf'), '%PDF-1.4\n')
+    const readFile = spyOn(fs, 'readFile')
+    const open = spyOn(fs, 'open')
+
+    try {
+      await expect(service.readFile('session-1', 'big.pdf')).resolves.toMatchObject({
+        state: 'ok',
+        previewType: 'pdf',
+      })
+      // A document travels through the `raw` route; its JSON metadata must cost a
+      // stat, not a read, or every watcher reload re-reads every open PDF.
+      expect(readFile).not.toHaveBeenCalled()
+      expect(open).not.toHaveBeenCalled()
+    } finally {
+      readFile.mockRestore()
+      open.mockRestore()
+    }
+  })
+
+  it('leaves unlisted binary extensions on the NUL-sniffed path', async () => {
+    const workDir = await makeTempDir('workspace-service-docs-')
+    const service = new WorkspaceService(async () => workDir)
+    await fs.writeFile(path.join(workDir, 'legacy.doc'), Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0x00]))
+
+    await expect(service.readFile('session-1', 'legacy.doc')).resolves.toMatchObject({
+      state: 'binary',
+      language: 'binary',
+    })
+  })
+
+  it('reports too_large above the format limit and ok at exactly the limit', async () => {
+    const workDir = await makeTempDir('workspace-service-docs-')
+    const service = new WorkspaceService(async () => workDir)
+    const limit = WORKSPACE_DOCUMENT_FORMATS.docx!.maxBytes
+    // Sparse files: the limit is 30 MiB but nothing is written to disk.
+    const atLimit = path.join(workDir, 'at-limit.docx')
+    const overLimit = path.join(workDir, 'over-limit.docx')
+    await fs.writeFile(atLimit, '')
+    await fs.truncate(atLimit, limit)
+    await fs.writeFile(overLimit, '')
+    await fs.truncate(overLimit, limit + 1)
+
+    await expect(service.readFile('session-1', 'at-limit.docx')).resolves.toMatchObject({
+      state: 'ok',
+      previewType: 'docx',
+      size: limit,
+    })
+    await expect(service.readFile('session-1', 'over-limit.docx')).resolves.toMatchObject({
+      state: 'too_large',
+      previewType: 'docx',
+      size: limit + 1,
+    })
+  })
+
+  it('changes the version when the file is rewritten, by size or by mtime alone', async () => {
+    const workDir = await makeTempDir('workspace-service-docs-')
+    const service = new WorkspaceService(async () => workDir)
+    const target = path.join(workDir, 'draft.docx')
+    await fs.writeFile(target, 'one')
+    await fs.utimes(target, 1_700_000_000, 1_700_000_000)
+
+    const first = (await service.readFile('session-1', 'draft.docx')).version
+    expect((await service.readFile('session-1', 'draft.docx')).version).toBe(first)
+
+    await fs.utimes(target, 1_700_000_100, 1_700_000_100)
+    const afterTouch = (await service.readFile('session-1', 'draft.docx')).version
+    expect(afterTouch).not.toBe(first)
+
+    await fs.writeFile(target, 'three')
+    await fs.utimes(target, 1_700_000_100, 1_700_000_100)
+    const afterResize = (await service.readFile('session-1', 'draft.docx')).version
+    expect(afterResize).not.toBe(afterTouch)
+  })
+
+  describe('resolveRawFile', () => {
+    it('returns the canonical path, size and format of a workspace document', async () => {
+      const workDir = await makeTempDir('workspace-service-raw-')
+      const service = new WorkspaceService(async () => workDir)
+      await fs.mkdir(path.join(workDir, 'out'))
+      await fs.writeFile(path.join(workDir, 'out', 'thesis.pdf'), '%PDF-1.4\n')
+
+      const raw = await service.resolveRawFile('session-1', 'out/thesis.pdf')
+
+      expect(raw).toMatchObject({
+        canonicalPath: await fs.realpath(path.join(workDir, 'out', 'thesis.pdf')),
+        relativePath: 'out/thesis.pdf',
+        size: 9,
+      })
+      expect(raw.format.mimeType).toBe('application/pdf')
+    })
+
+    it('rejects relative traversal and absolute paths outside the workspace', async () => {
+      const baseDir = await makeTempDir('workspace-service-raw-')
+      const workDir = path.join(baseDir, 'work')
+      await fs.mkdir(workDir)
+      await fs.writeFile(path.join(baseDir, 'secret.pdf'), '%PDF-1.4\n')
+      const service = new WorkspaceService(async () => workDir)
+
+      await expect(service.resolveRawFile('session-1', '../secret.pdf')).rejects.toThrow(/outside workspace/)
+      await expect(
+        service.resolveRawFile('session-1', path.join(baseDir, 'secret.pdf')),
+      ).rejects.toThrow(/outside workspace/)
+    })
+
+    it.skipIf(process.platform === 'win32')('rejects a symlink that points outside the workspace', async () => {
+      const baseDir = await makeTempDir('workspace-service-raw-')
+      const workDir = path.join(baseDir, 'work')
+      await fs.mkdir(workDir)
+      await fs.writeFile(path.join(baseDir, 'secret.pdf'), '%PDF-1.4\n')
+      await fs.symlink(path.join(baseDir, 'secret.pdf'), path.join(workDir, 'innocent.pdf'))
+      const service = new WorkspaceService(async () => workDir)
+
+      await expect(service.resolveRawFile('session-1', 'innocent.pdf')).rejects.toThrow(/outside workspace/)
+    })
+
+    it('serves a document in a registered access root outside the workdir', async () => {
+      const workDir = await makeTempDir('workspace-service-raw-work-')
+      const outsideDir = await makeTempDir('workspace-service-raw-outside-')
+      const outsideFile = path.join(outsideDir, 'report.xlsx')
+      await fs.writeFile(outsideFile, 'PK')
+      const service = new WorkspaceService(async () => workDir)
+
+      await expect(service.resolveRawFile('session-1', outsideFile)).rejects.toThrow(/outside workspace/)
+
+      registerFilesystemAccessRoot(outsideDir)
+      const raw = await service.resolveRawFile('session-1', outsideFile)
+      expect(raw.canonicalPath).toBe(await fs.realpath(outsideFile))
+      expect(raw.format.previewType).toBe('xlsx')
+    })
+
+    it('answers 415 for a type it does not serve, even if the file exists', async () => {
+      const workDir = await makeTempDir('workspace-service-raw-')
+      const service = new WorkspaceService(async () => workDir)
+      await fs.writeFile(path.join(workDir, 'notes.txt'), 'hello\n')
+      await fs.writeFile(path.join(workDir, 'photo.png'), Buffer.from([0x89, 0x50]))
+
+      await expect(service.resolveRawFile('session-1', 'notes.txt')).rejects.toMatchObject({ statusCode: 415 })
+      await expect(service.resolveRawFile('session-1', 'photo.png')).rejects.toMatchObject({ statusCode: 415 })
+    })
+
+    it('answers 404 for a missing file and for a directory with a document name', async () => {
+      const workDir = await makeTempDir('workspace-service-raw-')
+      const service = new WorkspaceService(async () => workDir)
+      await fs.mkdir(path.join(workDir, 'folder.pdf'))
+
+      await expect(service.resolveRawFile('session-1', 'missing.pdf')).rejects.toMatchObject({ statusCode: 404 })
+      await expect(service.resolveRawFile('session-1', 'folder.pdf')).rejects.toMatchObject({ statusCode: 404 })
+    })
+
+    it('serves delimited text as a table document, and refuses it above its own, lower limit', async () => {
+      const workDir = await makeTempDir('workspace-service-raw-')
+      const service = new WorkspaceService(async () => workDir)
+      await fs.writeFile(path.join(workDir, 'results.csv'), 'a,b\n1,2\n')
+
+      const raw = await service.resolveRawFile('session-1', 'results.csv')
+      expect(raw.format).toMatchObject({ previewType: 'xlsx', mimeType: 'text/csv' })
+
+      const limit = WORKSPACE_DOCUMENT_FORMATS.csv!.maxBytes
+      expect(limit).toBeLessThan(WORKSPACE_DOCUMENT_FORMATS.xlsx!.maxBytes)
+      const target = path.join(workDir, 'huge.csv')
+      await fs.writeFile(target, '')
+      await fs.truncate(target, limit + 1)
+
+      await expect(service.resolveRawFile('session-1', 'huge.csv')).rejects.toMatchObject({ statusCode: 413 })
+      await expect(service.readFile('session-1', 'huge.csv')).resolves.toMatchObject({ state: 'too_large' })
+    })
+
+    it('answers 413 above the format limit', async () => {
+      const workDir = await makeTempDir('workspace-service-raw-')
+      const service = new WorkspaceService(async () => workDir)
+      const limit = WORKSPACE_DOCUMENT_FORMATS.xlsx!.maxBytes
+      const target = path.join(workDir, 'huge.xlsx')
+      await fs.writeFile(target, '')
+      await fs.truncate(target, limit + 1)
+
+      await expect(service.resolveRawFile('session-1', 'huge.xlsx')).rejects.toMatchObject({ statusCode: 413 })
+    })
+  })
+})

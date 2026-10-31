@@ -1,0 +1,52 @@
+/* Feature-local dialog geometry; shared modal and controls retain their contracts. */
+.team-plan-dialog > :first-child {
+  padding: 28px 28px 0;
+}
+
+.team-plan-dialog > :nth-child(2) {
+  padding: 12px 28px 24px;
+}
+
+.team-plan-dialog > :last-child {
+  padding: 18px 28px;
+  border-top: 1px solid var(--color-border-separator);
+}
+
+.team-plan-editor {
+  /* Plan text is model-written: a long identifier, path or URL has no break
+     opportunity and would otherwise widen the dialog scroller (#1523).
+     `anywhere` also lowers min-content, so grid/flex items can shrink. */
+  overflow-wrap: anywhere;
+}
+
+.team-plan-member {
+  transition: background-color 180ms ease-out;
+}
+
+.team-plan-member:hover {
+  background: var(--color-surface-hover);
+}
+
+.team-plan-detail,
+.team-plan-batch {
+  animation: team-plan-reveal 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes team-plan-reveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 767px) {
+  .team-plan-dialog > :first-child { padding: 20px 16px 0; }
+  .team-plan-dialog > :nth-child(2) { padding: 12px 16px 20px; }
+  .team-plan-dialog > :last-child { padding: 14px 16px; }
+  .team-plan-footer > :last-child { width: 100%; }
+  .team-plan-footer [data-testid="team-plan-approve"] { flex: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-plan-detail,
+  .team-plan-batch { animation: none; }
+  .team-plan-member { transition: none; }
+}

@@ -1,0 +1,160 @@
+import { useCallback, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
+import { AtSign, ChevronDown, ExternalLink, Globe } from 'lucide-react'
+import type { AssistantOutputTarget } from '../../lib/assistantOutputTargets'
+import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
+import { useUIStore } from '../../stores/uiStore'
+import { useTranslation, type TranslationKey } from '../../i18n'
+import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
+import { IconButton } from '@/components/ui/IconButton'
+import { OpenWithMenu } from '@/components/composite/OpenWithMenu'
+import { FileTypeIcon } from '@/components/ui/FileTypeIcon'
+import { describeFileType, type OpenWithItem } from '../../lib/openWithItems'
+import { buildOpenWithMenuItemsForHref } from '../../lib/openWithMenuItems'
+import { openPreviewLink } from '../../lib/openPreviewLink'
+import { reportOpenFailure } from '../../lib/systemFileOpen'
+import type { PreviewLinkTarget } from '@/lib/previewLinkRouter'
+
+type Props = {
+  target: AssistantOutputTarget
+  sessionId: string
+  workDir?: string
+}
+
+export function AssistantOutputTargetCard({ target, sessionId, workDir }: Props) {
+  const t = useTranslation()
+  const [openWith, setOpenWith] = useState<{ items: OpenWithItem[]; anchor: DOMRect; triggerEl: HTMLElement } | null>(null)
+
+  const isLocalhost = target.kind === 'localhost-url'
+  // normalizedPath is a disk path, even when the authored href was encoded.
+  const linkTarget: PreviewLinkTarget = isLocalhost
+    ? target.href
+    : { path: target.normalizedPath ?? target.href }
+  const typeInfo = describeFileType(target.normalizedPath ?? target.href)
+  const badge = isLocalhost
+    ? t('assistantOutputs.kind.localhost')
+    : target.kind === 'local-html'
+      ? t('assistantOutputs.kind.html')
+      : target.kind === 'markdown'
+        ? t('assistantOutputs.kind.markdown')
+        : target.kind === 'file'
+          ? t(typeInfo.categoryKey as TranslationKey)
+          : t('assistantOutputs.kind.image')
+  const subtitle = target.subtitle ?? target.normalizedPath ?? target.href
+  const showSubtitle = subtitle !== target.title
+
+  const handleOpen = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    // A card is only shown for something it can open; one the router cannot
+    // place must say so rather than leave the click looking dead (#1556).
+    if (!openPreviewLink(linkTarget, sessionId)) reportOpenFailure(target.href)
+  }, [sessionId, linkTarget, target.href])
+
+  // The produced file joins the message being written, as a reference chip,
+  // to work on it in the next turn.
+  const handleAddToChat = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    const path = target.normalizedPath ?? target.href
+    const absolute = /^(?:[a-zA-Z]:[\\/]|\/)/.test(path)
+    useWorkspaceChatContextStore.getState().addReference(sessionId, {
+      kind: 'file',
+      path,
+      name: target.title,
+      ...(absolute ? { absolutePath: path } : {}),
+    })
+    useUIStore.getState().addToast({ type: 'success', message: t('assistantOutputs.addedToChat') })
+  }, [sessionId, t, target.href, target.normalizedPath, target.title])
+
+  const handleOpenWith = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    // Toggle: a second click on the same trigger closes the menu. OpenWithMenu's
+    // outside-mousedown ignores the trigger, so the trigger's own click is the
+    // only path that can close it on re-click.
+    if (openWith) {
+      setOpenWith(null)
+      return
+    }
+    const triggerEl = event.currentTarget
+    const rect = triggerEl.getBoundingClientRect()
+    void (async () => {
+      const items = await buildOpenWithMenuItemsForHref(linkTarget, {
+        sessionId,
+        workDir,
+        t: (k, v) => t(k as TranslationKey, v),
+      })
+      if (items.length === 0) return
+      setOpenWith({ items, anchor: rect, triggerEl })
+    })()
+  }, [openWith, sessionId, t, linkTarget, workDir])
+
+  return (
+    <section className="flex items-stretch overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)]">
+      {/* The whole row body is the hit area, not just the trailing icon button:
+          the icon is a discoverability affordance. Everything inside is a span
+          because a `button` may only contain phrasing content. */}
+      <button
+        type="button"
+        onClick={handleOpen}
+        aria-label={t('assistantOutputs.openAria', { title: target.title })}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[var(--color-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-border-focus)]"
+      >
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-surface-container)] text-[var(--color-text-secondary)]">
+          {isLocalhost ? (
+            <Globe size={15} strokeWidth={1.75} aria-hidden="true" />
+          ) : (
+            <FileTypeIcon path={target.normalizedPath ?? target.href} size={16} />
+          )}
+        </span>
+
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[13px] font-medium text-[var(--color-text-primary)]">
+              {target.title}
+            </span>
+            <Badge>
+              {badge}
+            </Badge>
+          </span>
+          {showSubtitle && (
+            <span className="mt-0.5 truncate font-mono text-[11px] text-[var(--color-text-tertiary)]" title={subtitle}>
+              {subtitle}
+            </span>
+          )}
+        </span>
+      </button>
+
+      <div className="flex shrink-0 items-center gap-1 pr-2">
+        {!isLocalhost ? (
+          <IconButton
+            icon={<AtSign size={14} strokeWidth={1.75} aria-hidden="true" />}
+            label={t('assistantOutputs.addToChat')}
+            size="sm"
+            tone="muted"
+            onClick={handleAddToChat}
+          />
+        ) : null}
+        <IconButton
+          icon={<ExternalLink size={14} strokeWidth={1.75} aria-hidden="true" />}
+          label={t('assistantOutputs.open')}
+          size="sm"
+          tone="muted"
+          onClick={handleOpen}
+        />
+        <Button
+          variant="secondary"
+          size="sm"
+          aria-label={t('openWith.title')}
+          onClick={handleOpenWith}
+          className="shrink-0"
+          icon={<ChevronDown size={12} strokeWidth={2} aria-hidden="true" />}
+          iconPosition="end"
+        >
+          {t('openWith.title')}
+        </Button>
+      </div>
+
+      {openWith && <OpenWithMenu items={openWith.items} anchor={openWith.anchor} triggerEl={openWith.triggerEl} onClose={() => setOpenWith(null)} />}
+    </section>
+  )
+}

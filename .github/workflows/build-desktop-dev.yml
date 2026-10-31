@@ -1,0 +1,245 @@
+name: Build Desktop (Dev)
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Build platforms'
+        required: true
+        default: 'windows-and-macos'
+        type: choice
+        options:
+          - windows-and-macos
+          - all
+          - macos-arm64
+          - macos-x64
+          - windows-x64
+          - windows-arm64
+          - linux-x64
+          - linux-arm64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-desktop-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          ALL='[{"platform":"macos-latest","target_triple":"aarch64-apple-darwin","builder_args":"--mac dmg zip --arm64","label":"macOS-ARM64","artifact_name":"macos-arm64","smoke_platform":"macos","arch":"arm64"},{"platform":"macos-latest","target_triple":"x86_64-apple-darwin","builder_args":"--mac dmg zip --x64","label":"macOS-x64","artifact_name":"macos-x64","smoke_platform":"macos","arch":"x64"},{"platform":"windows-latest","target_triple":"x86_64-pc-windows-msvc","builder_args":"--win nsis --x64","label":"Windows-x64","artifact_name":"windows-x64","smoke_platform":"windows","arch":"x64"},{"platform":"windows-latest","target_triple":"aarch64-pc-windows-msvc","builder_args":"--win nsis --arm64","label":"Windows-ARM64","artifact_name":"windows-arm64","smoke_platform":"windows","arch":"arm64"},{"platform":"ubuntu-22.04","target_triple":"x86_64-unknown-linux-gnu","builder_args":"--linux AppImage deb --x64","label":"Linux-x64","artifact_name":"linux-x64","smoke_platform":"linux","arch":"x64"},{"platform":"ubuntu-22.04-arm","target_triple":"aarch64-unknown-linux-gnu","builder_args":"--linux AppImage deb --arm64","label":"Linux-ARM64","artifact_name":"linux-arm64","smoke_platform":"linux","arch":"arm64"}]'
+          SELECTED="${{ inputs.platforms }}"
+          if [ "$SELECTED" = "all" ]; then
+            MATRIX=$(echo "$ALL" | jq -c '{include: .}')
+          elif [ "$SELECTED" = "windows-and-macos" ]; then
+            MATRIX=$(echo "$ALL" | jq -c '{include: [.[] | select(.smoke_platform == "windows" or .smoke_platform == "macos")]}')
+          else
+            MATRIX=$(echo "$ALL" | jq -c --arg sel "$SELECTED" '{include: [.[] | select(
+              ($sel == "macos-arm64" and .label == "macOS-ARM64") or
+              ($sel == "macos-x64" and .label == "macOS-x64") or
+              ($sel == "windows-x64" and .label == "Windows-x64") or
+              ($sel == "windows-arm64" and .label == "Windows-ARM64") or
+              ($sel == "linux-x64" and .label == "Linux-x64") or
+              ($sel == "linux-arm64" and .label == "Linux-ARM64")
+            )]}')
+          fi
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    runs-on: ${{ matrix.platform }}
+    name: Build (${{ matrix.label }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The STAR console address and app secret the packaged app signs in
+      # with. desktop/star-product.json is kept out of git; it comes from the
+      # repository secret STAR_PRODUCT_JSON (masked in logs, never printed).
+      - name: Write STAR product settings
+        shell: bash
+        env:
+          STAR_PRODUCT_JSON: ${{ secrets.STAR_PRODUCT_JSON }}
+        run: |
+          if [ -z "$STAR_PRODUCT_JSON" ]; then
+            echo "::error::Repository secret STAR_PRODUCT_JSON is not set: the packaged app could not reach the STAR console."
+            exit 1
+          fi
+          printf '%s' "$STAR_PRODUCT_JSON" > desktop/star-product.json
+          node -e "const p = require('./desktop/star-product.json'); if (!p.saasBaseUrl || !p.saasAppSecret) { console.error('::error::STAR_PRODUCT_JSON needs saasBaseUrl and saasAppSecret'); process.exit(1) }"
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./desktop/package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux dependencies
+        if: contains(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file libfuse2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install root dependencies
+        run: bun install
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        # The x64 Windows runner also packages ARM64; retain both native addons.
+        run: bun install --cpu="*"
+
+      - name: Install adapter dependencies
+        working-directory: adapters
+        run: bun install
+
+      - name: Verify Windows legacy data recovery
+        if: matrix.smoke_platform == 'windows'
+        working-directory: desktop
+        run: bun run test:windows-storage-recovery
+
+      - name: Prepare bundled ripgrep
+        working-directory: desktop
+        env:
+          SIDECAR_TARGET_TRIPLE: ${{ matrix.target_triple }}
+        run: bun run prepare:ripgrep
+
+      - name: Build sidecars
+        working-directory: desktop
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
+          SIDECAR_TARGET_TRIPLE: ${{ matrix.target_triple }}
+        run: bun run build:sidecars
+
+      - name: Verify compiled Windows sidecar startup
+        if: matrix.smoke_platform == 'windows' && matrix.arch == 'x64'
+        working-directory: desktop
+        env:
+          CC_HAHA_COMPILED_SIDECAR_SMOKE_STARTS: '20'
+        run: bun run test:compiled-sidecar-smoke
+
+      - name: Build renderer and Electron bundles
+        working-directory: desktop
+        run: |
+          bun run build
+          bun run build:electron
+
+      - name: Rebuild node-pty for the Linux glibc floor
+        if: matrix.smoke_platform == 'linux'
+        working-directory: desktop
+        run: bash ./scripts/rebuild-node-pty-linux.sh
+
+      # The Windows installer ships the STAR Code IDE next to the app
+      # (build-resources/star-code, electron-builder extraResources). The IDE
+      # build (~460 MB) is not in git: it is the STAR-Code-win32-x64.zip asset
+      # of this repository's release named by the STAR_CODE_RELEASE_TAG variable.
+      - name: Stage bundled STAR Code
+        if: matrix.smoke_platform == 'windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAR_CODE_RELEASE_TAG: ${{ vars.STAR_CODE_RELEASE_TAG }}
+        run: |
+          if (-not $env:STAR_CODE_RELEASE_TAG) {
+            Write-Output '::error::Repository variable STAR_CODE_RELEASE_TAG is not set (the release holding STAR-Code-win32-x64.zip).'
+            exit 1
+          }
+          $dir = Join-Path $env:RUNNER_TEMP 'star-code'
+          gh release download $env:STAR_CODE_RELEASE_TAG --pattern 'STAR-Code-win32-x64.zip' --dir $dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The archive holds the build's contents at its root ("STAR Code.exe"
+          # and its siblings). The bsdtar in System32 unpacks the ~11k files far
+          # faster than Expand-Archive; the tar on PATH may be Git's GNU tar,
+          # which cannot read zip.
+          $build = Join-Path $dir 'build'
+          New-Item -ItemType Directory -Force -Path $build | Out-Null
+          & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf (Join-Path $dir 'STAR-Code-win32-x64.zip') -C $build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location desktop
+          bun run stage:star-code --from $build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # `bun install --cpu="*"` put the sharp and ngrok addons of every Windows
+      # chip in node_modules, and electron-builder ships whatever is there.
+      # Only this job's chip goes into the installer, as in
+      # scripts/build-windows.ps1 for local builds.
+      - name: Leave other chips' native addons out
+        if: matrix.smoke_platform == 'windows'
+        shell: pwsh
+        working-directory: desktop
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          foreach ($chip in @('x64', 'arm64', 'ia32') | Where-Object { $_ -ne $env:TARGET_ARCH }) {
+            foreach ($relative in @("@img/sharp-win32-$chip", "@ngrok/ngrok-win32-$chip-msvc")) {
+              $installed = Join-Path 'node_modules' $relative
+              if (Test-Path -LiteralPath $installed) {
+                Remove-Item -LiteralPath $installed -Recurse -Force
+                Write-Output "Left out of this installer: $relative"
+              }
+            }
+          }
+
+      # Development builds are unsigned, so there is nothing to notarize:
+      # package.json keeps mac.notarize=true for the signed release path, and
+      # this turns it off the way scripts/build-macos-arm64.sh does locally.
+      - name: Build Electron app
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: node ./node_modules/electron-builder/out/cli/cli.js ${{ matrix.builder_args }} --publish never -c.mac.notarize=false
+
+      - name: Verify Windows installer execution
+        if: matrix.smoke_platform == 'windows' && matrix.arch == 'x64'
+        timeout-minutes: 10
+        working-directory: desktop
+        run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-installer-smoke.ps1 -ArtifactsDir ./build-artifacts/electron -Arch x64
+
+      - name: Verify packaged app structure
+        run: bun run test:package-smoke --platform ${{ matrix.smoke_platform }} --arch ${{ matrix.arch }} --package-kind release --artifacts-dir desktop/build-artifacts/electron ${{ matrix.smoke_platform == 'linux' && '--max-linux-glibc 2.28' || '' }}
+
+      - name: Collect artifacts
+        id: collect
+        shell: bash
+        run: |
+          STAGING="desktop/build-artifacts/ci-STAR-Agent-v${{ steps.version.outputs.version }}-${{ matrix.artifact_name }}"
+          mkdir -p "$STAGING"
+          find desktop/build-artifacts/electron -maxdepth 1 -type f \
+            \( -name "*.dmg" -o -name "*.exe" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.yml" \) \
+            | while read -r artifact; do
+              cp -f "$artifact" "$STAGING/"
+            done
+          if [ "${{ matrix.smoke_platform }}" = "macos" ]; then
+            cp -f desktop/scripts/install-macos-unsigned.sh "$STAGING/"
+          fi
+          echo "staging_dir=$STAGING" >> "$GITHUB_OUTPUT"
+          ls -lh "$STAGING/" 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: STAR-Agent-v${{ steps.version.outputs.version }}-${{ matrix.artifact_name }}
+          path: ${{ steps.collect.outputs.staging_dir }}
+          retention-days: 7
+          if-no-files-found: warn

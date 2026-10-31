@@ -1,0 +1,262 @@
+import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { conversationService } from './conversationService.js'
+import { sessionService } from './sessionService.js'
+import { observeSessionTurns } from './sessionTurnEvents.js'
+import * as turnEvents from './sessionTurnEvents.js'
+import { ApiError } from '../middleware/errorHandler.js'
+import { sessionMessageUuid } from '../../utils/sessionMessageInbox.js'
+import { __resetWebSocketHandlerStateForTests, getSessionTurnState, getSessionChatActivityState, handleWebSocket, stopSessionTurn, stopScheduledTaskTurn, submitSessionTurn, submitScheduledTaskTurn, translateCliMessage } from '../ws/handler.js'
+
+describe('background session turn admission', () => {
+  afterEach(() => { __resetWebSocketHandlerStateForTests(); mock.restore() })
+
+  function fixture() {
+    const callbacks = new Set<(message: any) => void>()
+    spyOn(sessionService, 'shouldPersistSession').mockReturnValue(false)
+    spyOn(sessionService, 'getCustomTitle').mockResolvedValue('Independent task')
+    spyOn(conversationService, 'hasSession').mockReturnValue(true)
+    spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+    spyOn(conversationService, 'onOutput').mockImplementation((_id, cb) => { callbacks.add(cb) })
+    spyOn(conversationService, 'removeOutputCallback').mockImplementation((_id, cb) => { callbacks.delete(cb) })
+    return callbacks
+  }
+
+  it('admits scheduled work through the normal guard and sends independent trusted provenance', async () => {
+    fixture()
+    const release = mock(async () => {})
+    const admission = spyOn(turnEvents, 'admitSessionUserTurn').mockResolvedValue({ release })
+    const beforeSend = async () => true
+    const control = spyOn(conversationService, 'requestControl').mockResolvedValue({ status: 'queued' })
+    const scheduledTask = { taskId: 'task', runId: 'run', scheduledFor: '2026-10-26T01:00:00Z', taskName: 'Check' }
+    expect(await submitScheduledTaskTurn('scheduled-target', '/clear', { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'occurrence', scheduledTask, beforeSend })).toEqual({ status: 'queued' })
+    expect(admission).toHaveBeenCalledTimes(1)
+    expect(control.mock.calls[0]?.[1]).toEqual({ subtype: 'enqueue_scheduled_task', message_id: 'occurrence', scheduled_task: scheduledTask, text: '/clear', start_if_idle: true })
+    expect(control.mock.calls[0]?.[5]).toBe(beforeSend)
+    expect(release).not.toHaveBeenCalled()
+    await expect(submitScheduledTaskTurn('scheduled-target', 'Again', { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'another', scheduledTask })).rejects.toThrow('active turn')
+  })
+
+  it.each([false, true])('keeps authoritative scheduled completion provenance across consumed guides and callback order (error=%s)', async (isError) => {
+    const callbacks = fixture()
+    spyOn(conversationService, 'requestControl').mockResolvedValue({ status: 'queued' })
+    const sessionId = 'scheduled-completion'
+    const scheduledTask = { taskId: 'task', runId: 'run', scheduledFor: '2026-10-26T01:00:00Z', taskName: 'Check' }
+    await submitScheduledTaskTurn(sessionId, 'Check', { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'occurrence', scheduledTask })
+    // A consumed human guide is part of this turn, even if it becomes the
+    // renderer's last user message after reconnecting and loading history.
+    for (const cb of [...callbacks]) cb({ type: 'user', isReplay: true, uuid: 'guide', message: { role: 'user', content: 'Also check tests' } })
+    const result = { type: 'result', result: 'Finished', is_error: isError }
+    const before = translateCliMessage(result, sessionId)
+    for (const cb of [...callbacks]) cb(result)
+    expect(getSessionTurnState(sessionId)).toBe('idle')
+    const after = translateCliMessage(result, sessionId)
+    for (const messages of [before, after]) {
+      expect(messages.find(message => message.type === 'message_complete')).toMatchObject({ scheduledTask })
+    }
+    // A subsequent ordinary result cannot inherit provenance or supply its own.
+    expect(translateCliMessage({ type: 'result', is_error: false, scheduledTask }, sessionId)
+      .find(message => message.type === 'message_complete')).not.toHaveProperty('scheduledTask')
+  })
+
+  it('cancels an acknowledged scheduled queue before consumption without stopping another turn', async () => {
+    fixture()
+    spyOn(conversationService, 'requestControl').mockResolvedValue({ status: 'queued' })
+    const interrupt = spyOn(conversationService, 'sendInterrupt').mockReturnValue(true)
+    spyOn(conversationService, 'stopSession').mockImplementation(() => {})
+    const scheduledTask = { taskId: 'task', runId: 'run', scheduledFor: '2026-10-26T01:00:00Z', taskName: 'Check' }
+    await submitScheduledTaskTurn('cancel-scheduled', 'Check', { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'queued-occurrence', scheduledTask })
+    stopScheduledTaskTurn('cancel-scheduled', 'older-occurrence')
+    expect(interrupt).not.toHaveBeenCalled()
+    stopScheduledTaskTurn('cancel-scheduled', 'queued-occurrence')
+    expect(interrupt).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the shared control turn without any renderer and observes completion', async () => {
+    const callbacks = fixture()
+    const control = spyOn(conversationService, 'requestControl').mockResolvedValue({ status: 'queued' })
+    const ordinary = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    const events: string[] = []
+    const unobserve = observeSessionTurns(event => { events.push(event.type) })
+    try {
+      const ack = await submitSessionTurn('worker', 'Inspect code', { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'assignment', sourceSessionId: 'root' })
+      expect(ack).toEqual({ status: 'queued' })
+      expect(control.mock.calls[0]?.[1]).toEqual({ subtype: 'enqueue_session_message', message_id: 'assignment', sender_session_id: 'root', text: 'Inspect code', start_if_idle: true })
+      expect(ordinary).not.toHaveBeenCalled()
+      expect(getSessionTurnState('worker')).toBe('running')
+      for (const cb of [...callbacks]) cb({ type: 'system', subtype: 'session_message_receipt', status: 'consumed', message_id: 'assignment', source_uuid: sessionMessageUuid('assignment') })
+      for (const cb of [...callbacks]) cb({ type: 'result', result: 'Finished', is_error: false })
+      await Promise.resolve()
+      expect(getSessionTurnState('worker')).toBe('idle')
+      expect(ack.status).toBe('queued')
+      expect(events).toContain('output')
+    } finally { unobserve() }
+  })
+
+  it('delivers peer /clear as ordinary agent text while preserving the real user command', async () => {
+    fixture()
+    const control = spyOn(conversationService, 'requestControl').mockResolvedValue({ status: 'queued' })
+    const clear = spyOn(sessionService, 'clearSessionTranscript').mockResolvedValue(undefined)
+    spyOn(conversationService, 'getSessionWorkDir').mockReturnValue('/tmp/session-clear-fixture')
+    spyOn(conversationService, 'getSessionPermissionMode').mockReturnValue('default')
+    const stop = spyOn(conversationService, 'stopSession').mockImplementation(() => {})
+    spyOn(conversationService, 'clearOutputCallbacks').mockImplementation(() => {})
+    await submitSessionTurn('peer-target', '/clear', { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'clear-text', sourceSessionId: 'root' })
+    expect(control.mock.calls[0]?.[1]).toMatchObject({ subtype: 'enqueue_session_message', text: '/clear' })
+    expect(clear).not.toHaveBeenCalled()
+    expect(stop).not.toHaveBeenCalled()
+
+    const ws = { data: { sessionId: 'user-target', connectedAt: Date.now(), channel: 'client' as const, sdkToken: null, serverHost: '127.0.0.1', serverPort: 1234 }, send: mock(() => 1), close: mock(() => {}) }
+    handleWebSocket.message(ws, JSON.stringify({ type: 'user_message', content: '/clear' }))
+    for (let i = 0; i < 30; i++) await Promise.resolve()
+    expect(clear).toHaveBeenCalledWith('user-target', '/tmp/session-clear-fixture', 'default')
+    expect(stop).toHaveBeenCalledWith('user-target')
+    expect(control).toHaveBeenCalledTimes(1)
+  })
+
+  function userSocket(sessionId: string) {
+    const sent: any[] = []
+    return { data: { sessionId, connectedAt: Date.now(), channel: 'client' as const, sdkToken: null, serverHost: '127.0.0.1', serverPort: 1234 }, send: mock((value: string) => { sent.push(JSON.parse(value)); return 1 }), close: mock(() => {}), sent }
+  }
+
+  it('rejects a capacity-denied manual turn before SDK delivery without reporting worker failure', async () => {
+    fixture()
+    spyOn(turnEvents, 'admitSessionUserTurn').mockRejectedValue(new ApiError(409, 'Worker capacity is full. Retry after a worker finishes.', 'SESSION_CAPACITY_FULL'))
+    const start = spyOn(conversationService, 'startSession')
+    const send = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    const events: string[] = []
+    const unobserve = observeSessionTurns(event => { events.push(event.type) })
+    try {
+      const ws = userSocket('capacity-worker')
+      handleWebSocket.message(ws, JSON.stringify({ type: 'user_message', content: 'Start now' }))
+      for (let i = 0; i < 30; i++) await Promise.resolve()
+      expect(ws.sent).toContainEqual({ type: 'error', code: 'SESSION_CAPACITY_FULL', message: 'Worker capacity is full. Retry after a worker finishes.', retryable: true })
+      expect(start).not.toHaveBeenCalled()
+      expect(send).not.toHaveBeenCalled()
+      expect(events).toEqual([])
+      expect(getSessionTurnState('capacity-worker')).toBe('idle')
+      expect(getSessionChatActivityState('capacity-worker')).toBe('idle')
+    } finally { unobserve() }
+  })
+
+  it.each([false, true])('retains the manual reservation only when SDK delivery succeeds (%s)', async sent => {
+    fixture()
+    const release = mock(async () => {})
+    spyOn(turnEvents, 'admitSessionUserTurn').mockResolvedValue({ release })
+    const send = spyOn(conversationService, 'sendMessage').mockResolvedValue(sent)
+    handleWebSocket.message(userSocket(`delivery-${sent}`), JSON.stringify({ type: 'user_message', content: 'Inspect' }))
+    for (let i = 0; i < 70; i++) await Promise.resolve()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(release).toHaveBeenCalledTimes(sent ? 0 : 1)
+  })
+
+  it('releases only the cancelled manual admission and never delivers after Stop', async () => {
+    fixture()
+    let finish!: (lease: { release: () => Promise<void> }) => void
+    let canAdmit: (() => boolean) | undefined
+    const release = mock(async () => {})
+    spyOn(turnEvents, 'admitSessionUserTurn').mockImplementation(async (_id, isCurrent) => {
+      canAdmit = isCurrent
+      return new Promise(resolve => { finish = resolve })
+    })
+    spyOn(conversationService, 'sendInterrupt').mockReturnValue(true)
+    spyOn(conversationService, 'stopSession').mockImplementation(() => {})
+    const send = spyOn(conversationService, 'sendMessage').mockResolvedValue(true)
+    handleWebSocket.message(userSocket('cancel-worker'), JSON.stringify({ type: 'user_message', content: 'Start now' }))
+    for (let i = 0; i < 30 && !canAdmit; i++) await Promise.resolve()
+    expect(canAdmit?.()).toBe(true)
+    expect(getSessionTurnState('cancel-worker')).toBe('blocked')
+    stopSessionTurn('cancel-worker')
+    expect(canAdmit?.()).toBe(false)
+    finish({ release })
+    for (let i = 0; i < 30; i++) await Promise.resolve()
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('does not deliver a control after Stop revokes admission during readiness', async () => {
+    fixture()
+    let allowWrite: (() => boolean) | undefined
+    let release!: () => void
+    const ready = new Promise<void>(resolve => { release = resolve })
+    spyOn(conversationService, 'sendInterrupt').mockReturnValue(true)
+    spyOn(conversationService, 'stopSession').mockImplementation(() => {})
+    spyOn(conversationService, 'requestControl').mockImplementation(async (_id, _request, _timeout, _signal, canSend) => {
+      allowWrite = canSend
+      await ready
+      if (!canSend?.()) throw new Error('Delivery cancelled')
+      return { status: 'queued' }
+    })
+    const pending = submitSessionTurn('worker', 'Inspect', { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'stopped', sourceSessionId: 'root' })
+    for (let i = 0; i < 30 && !allowWrite; i++) await Promise.resolve()
+    expect(allowWrite?.()).toBe(true)
+    stopSessionTurn('worker')
+    expect(allowWrite?.()).toBe(false)
+    release()
+    await expect(pending).rejects.toThrow('Delivery cancelled')
+  })
+
+  it('rejects a revoked collaboration before starting a turn', async () => {
+    fixture()
+    const control = spyOn(conversationService, 'requestControl')
+    await expect(submitSessionTurn('worker', 'Inspect', { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'gone', sourceSessionId: 'root', canSend: () => false })).rejects.toThrow('cancelled')
+    expect(control).not.toHaveBeenCalled()
+    expect(getSessionTurnState('worker')).toBe('idle')
+  })
+
+  it('moves a delegated title into the worktree transcript when no renderer is attached', async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'session-turn-title-'))
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = configDir
+    const sessionId = '0b5e1c4a-2f6d-4c8e-9a1b-3d7f5e9c2a10'
+    const title = 'Review the auth boundary'
+    // Creation names the launch directory; the CLI then writes the
+    // conversation into its worktree and reports that cwd in system/init.
+    const placeholder = join(configDir, 'projects', '-tmp-collab-source', `${sessionId}.jsonl`)
+    const transcript = join(configDir, 'projects', '-tmp-collab-worktree', `${sessionId}.jsonl`)
+    const jsonl = (entries: unknown[]) => entries.map(entry => JSON.stringify(entry)).join('\n') + '\n'
+    try {
+      await mkdir(join(placeholder, '..'), { recursive: true })
+      await mkdir(join(transcript, '..'), { recursive: true })
+      await writeFile(placeholder, jsonl([
+        { type: 'session-meta', isMeta: true, workDir: '/tmp/collab-source', timestamp: '2026-01-01T00:00:00.000Z' },
+        { type: 'custom-title', customTitle: title, timestamp: '2026-01-01T00:00:00.000Z' },
+      ]))
+      await writeFile(transcript, jsonl([{
+        type: 'user', uuid: 'assignment-user', parentUuid: null, sessionId, cwd: '/tmp/collab-worktree',
+        timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'user', content: 'Message from another session' },
+      }]))
+      const callbacks = new Set<(message: any) => void>()
+      spyOn(conversationService, 'hasSession').mockReturnValue(true)
+      spyOn(conversationService, 'getPendingPermissionRequests').mockReturnValue([])
+      spyOn(conversationService, 'onOutput').mockImplementation((_id, cb) => { callbacks.add(cb) })
+      spyOn(conversationService, 'removeOutputCallback').mockImplementation((_id, cb) => { callbacks.delete(cb) })
+      spyOn(conversationService, 'requestControl').mockResolvedValue({ status: 'queued' })
+
+      await submitSessionTurn(sessionId, title, { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'assignment', sourceSessionId: 'root' })
+      for (const cb of [...callbacks]) cb({ type: 'system', subtype: 'init', cwd: '/tmp/collab-worktree', model: 'mock-opus', session_id: sessionId })
+
+      const deadline = Date.now() + 5_000
+      while (await access(placeholder).then(() => true, () => false)) {
+        if (Date.now() > deadline) throw new Error('placeholder transcript was never retired')
+        await Bun.sleep(10)
+      }
+      expect(await readFile(transcript, 'utf8')).toContain(`"customTitle":"${title}"`)
+      expect((await sessionService.listSessions()).sessions.find(session => session.id === sessionId)?.title).toBe(title)
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      await rm(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns explicit historical-consumption acknowledgments without inventing a fresh turn', async () => {
+    fixture()
+    spyOn(conversationService, 'requestControl').mockResolvedValue({ status: 'consumed', duplicate: true })
+    const ack = await submitSessionTurn('worker', 'Already read', { serverHost: '127.0.0.1', serverPort: 1234, messageId: 'duplicate', sourceSessionId: 'root' })
+    expect(ack).toEqual({ status: 'consumed' })
+    expect(getSessionTurnState('worker')).toBe('idle')
+  })
+})

@@ -1,0 +1,31 @@
+/* 站点提示词 strip above the Code / Design composer: each row holds its chips
+   twice, so scrolling by half the track loops seamlessly. Hover or focus
+   pauses it; reduced motion turns it into a plain scrollable row. */
+@keyframes star-prompt-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.star-prompt-marquee {
+  animation: star-prompt-marquee var(--star-prompt-marquee-duration, 90s) linear infinite;
+}
+
+.star-prompt-marquee--reverse {
+  animation-direction: reverse;
+}
+
+.star-prompt-strip:hover .star-prompt-marquee,
+.star-prompt-strip:focus-within .star-prompt-marquee {
+  animation-play-state: paused;
+}
+
+.star-prompt-strip-fade {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 6%, #000 94%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 6%, #000 94%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .star-prompt-marquee {
+    animation: none;
+  }
+}

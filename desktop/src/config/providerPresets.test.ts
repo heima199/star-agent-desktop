@@ -1,0 +1,258 @@
+import { describe, expect, it } from 'vitest'
+
+import { BUNDLED_PROVIDER_PRESETS, presetMatchesBaseUrl, selectableProviderPresets } from './providerPresets'
+import type { ProviderPreset } from '../types/providerPreset'
+
+function makePreset(overrides: Partial<ProviderPreset> & { id: string }): ProviderPreset {
+  return {
+    name: overrides.id,
+    baseUrl: `https://example.test/${overrides.id}`,
+    apiFormat: 'anthropic',
+    defaultModels: { main: 'm', haiku: 'm', sonnet: 'm', opus: 'm' },
+    needsApiKey: true,
+    websiteUrl: '',
+    ...overrides,
+  }
+}
+
+describe('selectableProviderPresets', () => {
+  it('drops retired presets and keeps the rest in order', () => {
+    const presets = [
+      makePreset({ id: 'keep-a' }),
+      makePreset({ id: 'retired', deprecated: true }),
+      makePreset({ id: 'keep-b' }),
+    ]
+
+    expect(selectableProviderPresets(presets).map((preset) => preset.id)).toEqual([
+      'keep-a',
+      'keep-b',
+    ])
+  })
+
+  it('keeps presets that explicitly opt out of retirement', () => {
+    const presets = [makePreset({ id: 'live', deprecated: false })]
+
+    expect(selectableProviderPresets(presets)).toHaveLength(1)
+  })
+})
+
+describe('bundled provider presets', () => {
+  it('defaults MiniMax to the China endpoint while retaining the global endpoint', () => {
+    const minimax = BUNDLED_PROVIDER_PRESETS.find((preset) => preset.id === 'minimax')
+
+    expect(minimax?.baseUrl).toBe('https://api.minimaxi.com/anthropic')
+    expect(minimax?.regionalEndpoints).toEqual([
+      { region: 'cn_zh', baseUrl: 'https://api.minimaxi.com/anthropic' },
+      { region: 'global_en', baseUrl: 'https://api.minimax.io/anthropic' },
+    ])
+  })
+
+  it('matches the MiniMax preset for either regional endpoint', () => {
+    const minimax = BUNDLED_PROVIDER_PRESETS.find((preset) => preset.id === 'minimax')
+
+    expect(minimax && presetMatchesBaseUrl(minimax, 'https://api.minimax.io/anthropic')).toBe(true)
+    expect(minimax && presetMatchesBaseUrl(minimax, 'https://api.minimaxi.com/anthropic')).toBe(true)
+  })
+
+  it('defaults Zhipu GLM to China while retaining its official global endpoint', () => {
+    const zhipu = BUNDLED_PROVIDER_PRESETS.find((preset) => preset.id === 'zhipuglm')
+
+    expect(zhipu?.baseUrl).toBe('https://open.bigmodel.cn/api/anthropic')
+    expect(zhipu?.regionalEndpoints).toEqual([
+      { region: 'cn_zh', baseUrl: 'https://open.bigmodel.cn/api/anthropic' },
+      { region: 'global_en', baseUrl: 'https://api.z.ai/api/anthropic' },
+    ])
+    expect(zhipu?.reasoningProviderKind).toBe('zhipu_standard_api')
+    expect(zhipu?.defaultModels).toEqual({
+      main: 'glm-5.3[1m]',
+      haiku: 'glm-5.3-flash[1m]',
+      sonnet: 'glm-5.3[1m]',
+      opus: 'glm-5.3[1m]',
+    })
+    expect(zhipu?.modelContextWindows?.['glm-5.3']).toBe(1000000)
+    expect(zhipu?.modelContextWindows?.['glm-5.3-flash']).toBe(1000000)
+    expect(zhipu && presetMatchesBaseUrl(zhipu, ' HTTPS://API.Z.AI/api/anthropic/ ')).toBe(true)
+  })
+
+  it('keeps Kimi Code on its only official Anthropic-compatible endpoint', () => {
+    const kimi = BUNDLED_PROVIDER_PRESETS.find((preset) => preset.id === 'kimi')
+
+    expect(kimi?.baseUrl).toBe('https://api.kimi.com/coding/')
+    expect(kimi?.regionalEndpoints).toBeUndefined()
+  })
+
+  // Retiring a preset must not break providers already configured against it: the
+  // bundle keeps the entry so the edit form can still resolve its presetId, while
+  // the "add provider" chips are built from selectableProviderPresets.
+  it('keeps the retired 胜算云 preset resolvable but not selectable', () => {
+    const shengsuanyun = BUNDLED_PROVIDER_PRESETS.find((preset) => preset.id === 'shengsuanyun')
+
+    expect(shengsuanyun?.deprecated).toBe(true)
+    expect(shengsuanyun?.baseUrl).toBe('https://router.shengsuanyun.com/api')
+    expect(shengsuanyun?.authStrategy).toBe('auth_token')
+    // No referral link or promo copy left to render while editing.
+    expect(shengsuanyun?.apiKeyUrl).toBeUndefined()
+    expect(shengsuanyun?.promoText).toBeUndefined()
+    expect(shengsuanyun?.featured).toBeUndefined()
+    const selectableIds = selectableProviderPresets(BUNDLED_PROVIDER_PRESETS).map((p) => p.id)
+    expect(selectableIds).not.toContain('shengsuanyun')
+    expect(selectableIds).toContain('atlascloud')
+    expect(selectableIds).toContain('custom')
+  })
+
+  // Both gateways mount the Anthropic protocol on the bare host; a /v1 or
+  // /anthropic suffix here would double up with the path Claude Code appends.
+  it('keeps the retired gateways at their Anthropic-compatible roots', () => {
+    const fennoai = BUNDLED_PROVIDER_PRESETS.find((preset) => preset.id === 'fennoai')
+    const qiniuai = BUNDLED_PROVIDER_PRESETS.find((preset) => preset.id === 'qiniuai')
+
+    expect(fennoai?.baseUrl).toBe('https://api.fenno.ai')
+    expect(fennoai && presetMatchesBaseUrl(fennoai, ' HTTPS://API.Fenno.AI/ ')).toBe(true)
+    expect(qiniuai?.baseUrl).toBe('https://api.qnaigc.com')
+    expect(qiniuai && presetMatchesBaseUrl(qiniuai, ' HTTPS://API.QNAIGC.COM/ ')).toBe(true)
+  })
+
+  it.each(['xuanshuapi', 'fennoai', 'qiniuai'])('retires %s without removing saved-provider metadata', (id) => {
+    const preset = BUNDLED_PROVIDER_PRESETS.find((candidate) => candidate.id === id)
+
+    expect(preset?.deprecated).toBe(true)
+    expect(preset?.apiKeyUrl).toBeUndefined()
+    expect(preset?.promoText).toBeUndefined()
+    expect(preset?.featured).toBeUndefined()
+    expect(preset?.authStrategy).toBe('auth_token')
+    expect(preset?.defaultEnv).toBeDefined()
+    expect(preset?.modelContextWindows).toBeDefined()
+    expect(selectableProviderPresets(BUNDLED_PROVIDER_PRESETS).map((candidate) => candidate.id))
+      .not.toContain(id)
+  })
+
+  it('leads with STAR and keeps active sponsors selectable with Modelflare between AruHub and Atlas Cloud', () => {
+    expect(selectableProviderPresets(BUNDLED_PROVIDER_PRESETS).filter((preset) => preset.featured).map((preset) => preset.id))
+      .toEqual(['star-saas', 'aruhub', 'modelflare', 'atlascloud'])
+  })
+
+  it('updates AruHub to its published Claude 5.5 IDs while keeping the Haiku fallback', () => {
+    const preset = BUNDLED_PROVIDER_PRESETS.find((candidate) => candidate.id === 'aruhub')
+
+    expect(preset?.defaultModels).toEqual({
+      main: 'claude-opus-5-5',
+      haiku: 'claude-sonnet-5-5',
+      sonnet: 'claude-sonnet-5-5',
+      opus: 'claude-opus-5-5',
+    })
+  })
+
+  it('bundles Modelflare with its signup link, sponsor badges and Claude 5.5 context windows', () => {
+    const preset = BUNDLED_PROVIDER_PRESETS.find((candidate) => candidate.id === 'modelflare')
+
+    expect(preset).toMatchObject({
+      name: 'Modelflare',
+      baseUrl: 'https://modelflare.dev',
+      apiFormat: 'anthropic',
+      authStrategy: 'auth_token',
+      apiKeyUrl: 'https://modelflare.dev/sign-up?utm_source=github&utm_campaign=cchaha',
+      featured: true,
+      isNew: true,
+      needsApiKey: true,
+      defaultModels: {
+        main: 'claude-opus-5-5',
+        haiku: 'claude-haiku-5-5',
+        sonnet: 'claude-sonnet-5-5',
+        opus: 'claude-opus-5-5',
+      },
+      modelContextWindows: {
+        'claude-opus-5-5': 1000000,
+        'claude-sonnet-5-5': 1000000,
+        'claude-haiku-5-5': 1000000,
+      },
+    })
+    expect(preset && presetMatchesBaseUrl(preset, ' HTTPS://MODELFLARE.DEV/ ')).toBe(true)
+    expect(selectableProviderPresets(BUNDLED_PROVIDER_PRESETS).map((candidate) => candidate.id))
+      .toContain('modelflare')
+  })
+
+  it('retires ApiSmart without removing what saved providers resolve from the preset', () => {
+    const preset = BUNDLED_PROVIDER_PRESETS.find((candidate) => candidate.id === 'apismart')
+
+    expect(preset?.deprecated).toBe(true)
+    expect(preset?.apiKeyUrl).toBeUndefined()
+    expect(preset?.promoText).toBeUndefined()
+    expect(preset?.featured).toBeUndefined()
+    expect(preset?.baseUrl).toBe('https://gw.apismart.ai/v1')
+    expect(preset?.apiFormat).toBe('openai_chat')
+    expect(preset?.defaultImageGeneration).toEqual({ model: 'doubao-seedream-5-0' })
+    expect(preset?.modelContextWindows).toBeDefined()
+    expect(selectableProviderPresets(BUNDLED_PROVIDER_PRESETS).map((candidate) => candidate.id))
+      .not.toContain('apismart')
+  })
+
+  it('keeps the retired 接口AI preset resolvable but not selectable', () => {
+    const jiekouai = BUNDLED_PROVIDER_PRESETS.find((preset) => preset.id === 'jiekouai')
+
+    expect(jiekouai?.deprecated).toBe(true)
+    expect(jiekouai?.apiKeyUrl).toBeUndefined()
+    expect(jiekouai?.promoText).toBeUndefined()
+    expect(jiekouai?.featured).toBeUndefined()
+
+    expect(selectableProviderPresets(BUNDLED_PROVIDER_PRESETS).map((p) => p.id))
+      .not.toContain('jiekouai')
+  })
+
+  it('bundles OpenRouter as a direct Anthropic-native aggregation preset', () => {
+    const preset = BUNDLED_PROVIDER_PRESETS.find((candidate) => candidate.id === 'openrouter')
+
+    expect(preset).toMatchObject({
+      name: 'OpenRouter',
+      baseUrl: 'https://openrouter.ai/api',
+      apiFormat: 'anthropic',
+      authStrategy: 'auth_token',
+      needsApiKey: true,
+      websiteUrl: 'https://openrouter.ai',
+      apiKeyUrl: 'https://openrouter.ai/settings/keys',
+      isNew: true,
+      defaultModels: {
+        main: 'anthropic/claude-sonnet-5.5',
+        haiku: 'anthropic/claude-haiku-5.5',
+        sonnet: 'anthropic/claude-sonnet-5.5',
+        opus: 'anthropic/claude-opus-5.5',
+      },
+    })
+    expect(preset?.deprecated).toBeUndefined()
+    // A format rule or upstream header here would silently route the preset
+    // through the local proxy; OpenRouter speaks Anthropic natively at its root.
+    expect(preset?.modelApiFormats).toBeUndefined()
+    expect(preset?.upstreamHeaders).toBeUndefined()
+    expect(preset && presetMatchesBaseUrl(preset, ' HTTPS://OPENROUTER.AI/API/ ')).toBe(true)
+    expect(selectableProviderPresets(BUNDLED_PROVIDER_PRESETS).map((candidate) => candidate.id))
+      .toContain('openrouter')
+    // Every default model is namespaced, so the table has to carry their windows.
+    for (const model of Object.values(preset!.defaultModels)) {
+      expect(preset?.modelContextWindows?.[model], model).toBeGreaterThan(0)
+    }
+  })
+
+  it('does not bundle the removed TeamoRouter preset', () => {
+    expect(BUNDLED_PROVIDER_PRESETS.some((preset) => preset.id === 'teamorouter')).toBe(false)
+  })
+
+  // The bundle ships the same JSON the server parses, so a field the desktop type
+  // forgot to mirror would be invisible in the form while still steering requests.
+  it('bundles the OpenCode Go rules the server resolves from', () => {
+    const preset = BUNDLED_PROVIDER_PRESETS.find((candidate) => candidate.id === 'opencode-go')
+
+    expect(preset?.baseUrl).toBe('https://opencode.ai/zen/go/v1')
+    expect(preset?.apiFormat).toBe('openai_chat')
+    expect(preset?.authStrategy).toBe('api_key')
+    expect(preset?.modelApiFormats).toEqual([
+      { prefixes: ['grok-', 'gpt-', 'muse-spark-'], apiFormat: 'openai_responses' },
+      { prefixes: ['minimax-', 'qwen', 'union-alpha'], apiFormat: 'anthropic' },
+      { prefixes: ['gemini-'], apiFormat: 'gemini', baseUrl: '/inference/go/google/v1beta' },
+    ])
+    expect(preset?.upstreamHeaders).toEqual({
+      'User-Agent': 'cc-haha/$VERSION',
+      'x-opencode-session': '$SESSION_ID',
+    })
+    expect(selectableProviderPresets(BUNDLED_PROVIDER_PRESETS).map((candidate) => candidate.id))
+      .toContain('opencode-go')
+  })
+})

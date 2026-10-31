@@ -1,0 +1,183 @@
+import { useEffect, useState, type ReactNode } from 'react'
+import { useUIStore } from '@/stores/uiStore'
+import { useTabStore } from '../../stores/tabStore'
+import { EmptySession } from '../../pages/EmptySession'
+import { ActiveSession } from '../../pages/ActiveSession'
+import { ScheduledTasks } from '../../pages/ScheduledTasks'
+import { ExtensionMarket } from '@/pages/ExtensionMarket'
+import { Settings } from '../../pages/Settings'
+import { TerminalSettings } from '../../pages/TerminalSettings'
+import { SubagentRunPage, TeamMemberRunPage } from '../../pages/SubagentRunPage'
+import { AgentTeamsWorkbenchTab } from '../agentTeams/AgentTeamsWorkbenchTab'
+import { WorkspaceBrowserGuestLayer } from '../workbench/WorkspaceBrowserGuestLayer'
+import { StarStudioPage } from '../../pages/star/StarStudioPage'
+import { StarLibraryPage } from '../../pages/star/StarLibraryPage'
+import { StarPhonePage } from '../../pages/star/StarPhonePage'
+import { StarPageHost } from '../../pages/star/StarPageHost'
+
+type ContentRouterProps = {
+  /**
+   * What shows when no tab is active. The desktop shows the new-session page;
+   * the phone shows its session list with the new-task composer under it.
+   */
+  homePage?: ReactNode
+}
+
+export function ContentRouter({ homePage }: ContentRouterProps = {}) {
+  const newSessionDraft = useUIStore(s => s.newSessionDraft)
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const tabs = useTabStore((s) => s.tabs)
+  const activeTabType = tabs.find((t) => t.sessionId === activeTabId)?.type
+  const terminalTabs = tabs.filter((tab) => tab.type === 'terminal')
+  const activeSessionId = activeTabType === 'session' ? activeTabId : null
+  const [lastSessionId, setLastSessionId] = useState<string | null>(activeSessionId)
+  const retainedSessionId = activeSessionId ?? (
+    tabs.some((tab) => tab.sessionId === lastSessionId && tab.type === 'session')
+      ? lastSessionId
+      : null
+  )
+
+  useEffect(() => {
+    if (activeSessionId) setLastSessionId(activeSessionId)
+    else if (lastSessionId && !retainedSessionId) setLastSessionId(null)
+  }, [activeSessionId, lastSessionId, retainedSessionId])
+
+  useEffect(() => {
+    if (activeTabType !== 'workbench') return
+    const legacy = tabs.find(tab => tab.sessionId === activeTabId)
+    const source = legacy?.workbenchSessionId ?? legacy?.sourceSessionId
+    if (!source || !legacy) return
+    const store = useTabStore.getState()
+    if (tabs.some(tab => tab.sessionId === source)) store.setActiveTab(source)
+    else store.openTab(source, legacy.title)
+    store.closeTab(legacy.sessionId)
+  }, [activeTabId, activeTabType, tabs])
+
+  const draftVisible = !activeTabId || !activeTabType
+  // The retained draft is the desktop's new-session page. A shell with a home
+  // of its own (the phone's session list, the tablet's new-task page) starts
+  // tasks its own way, and a desktop draft left over from a wider window must
+  // not cover that home.
+  const retainsDraft = !homePage
+  const draft = retainsDraft ? newSessionDraft : null
+  useEffect(() => {
+    // The initial desktop composer needs the same retained draft as Cmd+N.
+    if (draftVisible && retainsDraft && !newSessionDraft) {
+      useUIStore.getState().startNewSessionDraft()
+    }
+  }, [draftVisible, retainsDraft, newSessionDraft])
+  let page: ReactNode = null
+  if (!activeTabId || !activeTabType) {
+    page = draft ? null : homePage ?? <EmptySession />
+  } else if (activeTabType === 'settings') {
+    page = <Settings />
+  } else if (activeTabType === 'scheduled') {
+    page = <ScheduledTasks />
+  } else if (activeTabType === 'connectors' || activeTabType === 'market') {
+    page = <ExtensionMarket />
+  } else if (activeTabType === 'star-studio') {
+    page = <StarStudioPage />
+  } else if (activeTabType === 'star-library') {
+    page = <StarLibraryPage />
+  } else if (activeTabType === 'star-phone') {
+    page = <StarPhonePage />
+  } else if (activeTabType === 'star-page') {
+    const pageTab = tabs.find((tab) => tab.sessionId === activeTabId)
+    page = <StarPageHost key={pageTab?.pageId} pageId={pageTab?.pageId ?? ''} />
+  } else if (activeTabType === 'subagent') {
+    const subagentTab = tabs.find((t) => t.sessionId === activeTabId)
+    page = subagentTab?.sourceSessionId && subagentTab.subagentToolUseId
+      ? (
+        <SubagentRunPage
+          sourceSessionId={subagentTab.sourceSessionId}
+          toolUseId={subagentTab.subagentToolUseId}
+          taskId={subagentTab.subagentTaskId}
+          title={subagentTab.title}
+        />
+      )
+      : <EmptySession />
+  } else if (activeTabType === 'team-member') {
+    const memberTab = tabs.find((tab) => tab.sessionId === activeTabId)
+    page = memberTab?.teamLeadSessionId && memberTab.teamMemberAgentId
+      ? (
+        <TeamMemberRunPage
+          tabId={activeTabId}
+          leadSessionId={memberTab.teamLeadSessionId}
+          agentId={memberTab.teamMemberAgentId}
+          title={memberTab.title}
+        />
+      )
+      : <EmptySession />
+  } else if (activeTabType === 'workbench') {
+    // An in-memory legacy tab returns to its task; restored storage is migrated
+    // before reaching this router. Never mount a second workspace controller.
+    page = <EmptySession />
+  } else if (activeTabType === 'team') {
+    const teamTab = tabs.find((t) => t.sessionId === activeTabId)
+    page = teamTab?.teamLeadSessionId
+      ? <AgentTeamsWorkbenchTab tabId={activeTabId} leadSessionId={teamTab.teamLeadSessionId} />
+      : <EmptySession />
+  } else if (activeTabType !== 'terminal' && activeTabType !== 'session') {
+    page = <EmptySession />
+  }
+
+  return (
+    <div className="relative min-h-0 flex-1 overflow-hidden">
+      {/*
+        Always rendered, even with no task to retain: the browser page layer
+        inside it must outlive every task switch, because a page whose element
+        is removed is destroyed and one that is moved reloads.
+      */}
+      <div
+        aria-hidden={!activeSessionId}
+        {...(activeSessionId ? {} : { inert: '' })}
+        data-testid="session-tab-panel"
+        className={`absolute inset-0 flex min-h-0 flex-col overflow-hidden ${
+          activeSessionId ? 'z-10 opacity-100' : 'pointer-events-none z-0 opacity-0'
+        }`}
+      >
+        {retainedSessionId ? (
+          <ActiveSession sessionId={retainedSessionId} active={Boolean(activeSessionId)} />
+        ) : null}
+        <WorkspaceBrowserGuestLayer />
+      </div>
+      {draft && (
+        <div hidden={!draftVisible} aria-hidden={!draftVisible} {...(draftVisible ? {} : { inert: '' })}
+          data-testid="new-session-draft-panel"
+          className={draftVisible ? 'absolute inset-0 z-10 flex min-h-0 flex-col overflow-hidden' : 'hidden'}>
+          {/* Keyed by revision only: moving an empty draft to another project
+              changes `initialWorkDir` and the composer follows it in place. */}
+          <EmptySession key={draft.revision} draftRevision={draft.revision} initialWorkDir={draft.workDir} visible={draftVisible} />
+        </div>
+      )}
+      {page && (
+        <div className="absolute inset-0 z-10 flex min-h-0 flex-col overflow-hidden">
+          {page}
+        </div>
+      )}
+      {terminalTabs.map((tab) => {
+        const active = tab.sessionId === activeTabId
+        const visible = activeTabType === 'terminal' && active
+        return (
+          <div
+            key={tab.sessionId}
+            aria-hidden={!visible}
+            data-testid={`terminal-tab-panel-${tab.sessionId}`}
+            className={`absolute inset-0 flex min-h-0 flex-col overflow-hidden ${
+              visible ? 'z-20 opacity-100' : 'pointer-events-none z-0 opacity-0'
+            }`}
+          >
+            <TerminalSettings
+              active={active}
+              cwd={tab.terminalCwd}
+              runtimeId={tab.terminalRuntimeId ?? tab.sessionId}
+              workspace
+              testId={`terminal-host-${tab.sessionId}`}
+              onNewTerminal={() => useTabStore.getState().openTerminalTab(tab.terminalCwd)}
+            />
+          </div>
+        )
+      })}
+    </div>
+  )
+}

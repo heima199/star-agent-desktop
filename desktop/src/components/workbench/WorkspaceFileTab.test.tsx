@@ -1,0 +1,740 @@
+import '@testing-library/jest-dom'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const { loadFile, loadStatus } = vi.hoisted(() => ({
+  loadFile: vi.fn().mockResolvedValue(undefined),
+  loadStatus: vi.fn().mockResolvedValue(undefined),
+}))
+const openWithState = vi.hoisted(() => ({
+  primaryTarget: { id: 'code', kind: 'ide', label: 'VS Code', icon: '', platform: 'darwin' },
+  targets: [], loading: false, error: null, openTarget: vi.fn(),
+}))
+vi.mock('../workspace/workspaceFileOpenTargets', () => ({ useWorkspaceFileOpenTargets: () => openWithState }))
+
+/**
+ * The tree pane and the two text surfaces have their own suites. Stubbing them
+ * keeps these cases about the one decision this component makes: which surface
+ * a given entry belongs on, and what stays on screen while that changes.
+ */
+vi.mock('./WorkspaceFileTreePane', () => ({
+  WorkspaceFileTreePane: ({ selectedPath, onOpen }: {
+    selectedPath: string | null
+    onOpen: (path: string) => void
+  }) => (
+    <div data-testid="file-tree-pane" data-selected={selectedPath ?? ''}>
+      <button type="button" onClick={() => onOpen('src/other.ts')}>
+        tree row
+      </button>
+      <button type="button" onClick={() => onOpen('src/third.ts')}>
+        second tree row
+      </button>
+    </div>
+  ),
+}))
+
+vi.mock('../workspace/surfaces/CodeSurface', () => ({
+  CodeSurface: ({ value, language, onAddSelection }: {
+    value: string
+    language: string
+    onAddSelection: (selection: { startLine: number; endLine: number; text: string }) => void
+  }) => (
+    <div
+      data-testid="code-surface"
+      data-language={language}
+      // Like the real surface: a scroll container the panel restores a saved
+      // position onto. jsdom lays nothing out and ignores scrollTop writes, so the
+      // property is made a plain one that keeps what it is given.
+      data-workspace-scroll-surface=""
+      ref={(node) => {
+        if (node && !Object.prototype.hasOwnProperty.call(node, 'scrollTop')) {
+          Object.defineProperty(node, 'scrollTop', { value: 0, writable: true, configurable: true })
+        }
+      }}
+    >
+      {value}
+      <button
+        type="button"
+        onClick={() => onAddSelection({ startLine: 3, endLine: 5, text: 'const x = 1' })}
+      >
+        add selection
+      </button>
+    </div>
+  ),
+}))
+
+/**
+ * The document surface owns fetching and rendering bytes and has its own suite.
+ * Here it is a marker that records what the panel handed it, and a scroll
+ * container that (like a real viewer) has nothing to scroll until it has laid out.
+ */
+vi.mock('../workspace/surfaces/document/DocumentSurface', () => ({
+  DocumentSurface: (props: {
+    sessionId: string
+    path: string
+    absolutePath: string
+    previewType: string
+    version: string | undefined
+    initialView: { scrollTop: number; scrollLeft: number } | undefined
+    source?: { onAddSelection: (selection: { startLine: number; endLine: number; text: string }) => void }
+  }) => (
+    <div
+      data-testid="document-surface"
+      data-preview-type={props.previewType}
+      data-version={props.version ?? ''}
+      data-absolute-path={props.absolutePath}
+      data-initial-scroll-top={props.initialView?.scrollTop ?? ''}
+    >
+      <div
+        data-testid="deferred-scroller"
+        data-workspace-scroll-surface="deferred"
+        // An empty container has nothing to scroll, so a browser clamps every
+        // write to 0. jsdom would remember the value; without this the clamp that
+        // makes the regression below real would never happen under test.
+        ref={(node) => {
+          if (node && !Object.prototype.hasOwnProperty.call(node, 'scrollTop')) {
+            Object.defineProperty(node, 'scrollTop', { get: () => 0, set: () => {}, configurable: true })
+          }
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => props.source?.onAddSelection({ startLine: 2, endLine: 2, text: 'a,b' })}
+      >
+        add source selection
+      </button>
+    </div>
+  ),
+}))
+
+vi.mock('../../lib/systemFileOpen', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/systemFileOpen')>()),
+  openLocalFileWithSystem: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('../workspace/surfaces/MarkdownSurface', () => ({
+  MarkdownSurface: ({ value }: { value: string }) => (
+    <div data-testid="markdown-surface">{value}</div>
+  ),
+}))
+
+/**
+ * The real menu resolves open targets over the network; what matters here is
+ * the path it is handed, so the stub renders it and two real `menuitem`s for
+ * the keyboard cases.
+ */
+vi.mock('../workspace/WorkspaceFileOpenWith', () => ({
+  WorkspaceFileOpenWith: ({ absolutePath, onRefresh }: { absolutePath: string; onRefresh?: () => void }) => (
+    <div data-testid="open-with-menu" data-absolute-path={absolutePath}>
+      <button type="button" role="menuitem">Open in editor</button>
+      <button type="button" role="menuitem">Reveal in finder</button>
+      <button type="button" role="menuitem" onClick={onRefresh}>Refresh workspace</button>
+    </div>
+  ),
+}))
+
+import { WorkspaceFileTab } from './WorkspaceFileTab'
+import { openLocalFileWithSystem } from '../../lib/systemFileOpen'
+import { useSettingsStore } from '../../stores/settingsStore'
+import { useWorkspaceChatContextStore } from '../../stores/workspaceChatContextStore'
+import { useWorkspaceContentStore, type WorkspaceFileEntry } from '../../stores/workspaceContentStore'
+import { useWorkspaceStore } from '../../stores/workspaceStore'
+import type { WorkspaceFileTab as WorkspaceFileTabModel } from '../../lib/workspace/types'
+
+const SESSION = 'session-a'
+
+function fileTab(path: string, overrides: Partial<WorkspaceFileTabModel> = {}): WorkspaceFileTabModel {
+  return {
+    id: 'tab-1',
+    kind: 'file',
+    dock: 'side',
+    preview: false,
+    createdAt: 0,
+    path,
+    ...overrides,
+  }
+}
+
+function seedEntry(path: string, entry: Partial<WorkspaceFileEntry>) {
+  useWorkspaceContentStore.setState((state) => ({
+    filesByKey: {
+      ...state.filesByKey,
+      [`${SESSION}::${path}`]: { path, state: 'ok', ...entry } as WorkspaceFileEntry,
+    },
+  }))
+}
+
+function renderTab(path: string, overrides: Partial<WorkspaceFileTabModel> = {}) {
+  return render(<WorkspaceFileTab sessionId={SESSION} tab={fileTab(path, overrides)} />)
+}
+
+beforeEach(() => {
+  useSettingsStore.setState({ locale: 'en' })
+  useWorkspaceContentStore.setState({
+    filesByKey: {},
+    treeByKey: {},
+    treeLoadingByKey: {},
+    expandedBySession: {},
+    treeViewBySession: {},
+    fileViewByKey: {},
+    statusBySession: {
+      [SESSION]: {
+        state: 'ok',
+        workDir: '/repo',
+        repoName: 'repo',
+        branch: 'main',
+        isGitRepo: true,
+        changedFiles: [],
+      },
+    },
+    loadFile,
+    loadStatus,
+  })
+  useWorkspaceChatContextStore.setState({ referencesBySession: {} })
+  useWorkspaceStore.setState({ bySession: {}, sideWidth: 860, bottomHeight: 420 })
+  loadFile.mockClear()
+  loadStatus.mockClear()
+})
+
+afterEach(() => {
+  cleanup()
+})
+
+describe('content states', () => {
+  it('gives the empty file picker all the space instead of reserving a blank preview', () => {
+    renderTab('')
+    expect(screen.queryByTestId('workspace-file-preview')).toBeNull()
+    expect(screen.getByTestId('workspace-tree-sidebar')).toHaveStyle({ width: '100%', maxWidth: '100%' })
+    expect(screen.getByTestId('file-tree-pane')).toBeVisible()
+  })
+
+  it('keeps one full-width toolbar above both the preview and the file tree', () => {
+    seedEntry('src/a.ts', { content: 'export const value = 1', language: 'typescript' })
+    renderTab('src/a.ts')
+    const header = screen.getByTestId('workspace-file-header')
+    const body = screen.getByTestId('workspace-file-body')
+    expect(header.parentElement).toBe(body.parentElement)
+    expect(body).toContainElement(screen.getByTestId('code-surface'))
+    expect(body).toContainElement(screen.getByTestId('file-tree-pane'))
+    expect(header).not.toContainElement(screen.getByTestId('file-tree-pane'))
+    fireEvent.click(screen.getByTestId('workspace-file-tree-toggle'))
+    expect(header).toBeVisible()
+    expect(screen.getByTestId('workspace-tree-sidebar')).not.toBeVisible()
+    expect(screen.getByTestId('code-surface')).toBeVisible()
+  })
+
+  it('asks for the file as soon as the tab is shown', () => {
+    renderTab('src/a.ts')
+    expect(loadFile).toHaveBeenCalledWith(SESSION, 'src/a.ts')
+  })
+
+  it('shows a loading message before the first payload arrives', () => {
+    renderTab('src/a.ts')
+    expect(screen.getByText('Loading preview...')).toBeInTheDocument()
+  })
+
+  it('keeps showing the loading message while a first read is in flight', () => {
+    seedEntry('src/a.ts', { state: 'loading' })
+    renderTab('src/a.ts')
+    expect(screen.getByText('Loading preview...')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['missing', 'File not found.'],
+    ['too_large', 'File is too large to preview.'],
+    ['binary', 'Binary file preview is unavailable.'],
+  ] as const)('gives %s its own explanation rather than an empty pane', (state, message) => {
+    seedEntry('src/a.ts', { state })
+    renderTab('src/a.ts')
+
+    expect(screen.getByText(message)).toBeInTheDocument()
+    expect(screen.queryByTestId('code-surface')).toBeNull()
+  })
+
+  it('reports the server reason for a failed read', () => {
+    seedEntry('src/a.ts', { state: 'error', error: 'EACCES: permission denied' })
+    renderTab('src/a.ts')
+
+    expect(screen.getByRole('alert')).toHaveTextContent('EACCES: permission denied')
+  })
+
+  it('falls back to a generic message when a failure carries no reason', () => {
+    seedEntry('src/a.ts', { state: 'error' })
+    renderTab('src/a.ts')
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to load workspace data.')
+  })
+
+  it('renders an image payload as an image', () => {
+    seedEntry('assets/logo.png', {
+      state: 'ok',
+      previewType: 'image',
+      dataUrl: 'data:image/png;base64,AAAA',
+    })
+    renderTab('assets/logo.png')
+
+    expect(screen.getByAltText('assets/logo.png')).toHaveAttribute(
+      'src',
+      'data:image/png;base64,AAAA',
+    )
+  })
+
+  it('leaves a zoomed picture\'s scroll position to the picture, which has nothing to scroll until it has loaded', () => {
+    // Restoring it here would be clamped to 0 by a picture not yet laid out at its zoom,
+    // and the panel would then record that 0 over the position it was trying to restore.
+    seedEntry('assets/logo.png', { state: 'ok', previewType: 'image', dataUrl: 'data:image/png;base64,AAAA' })
+    useWorkspaceContentStore.setState({
+      fileViewByKey: { [`${SESSION}::assets/logo.png`]: { scrollTop: 442, scrollLeft: 524, zoom: 1.75 } },
+    })
+    renderTab('assets/logo.png')
+
+    expect(screen.getByRole('group', { name: 'assets/logo.png' })).toHaveAttribute('data-workspace-scroll-surface', 'deferred')
+    expect(useWorkspaceContentStore.getState().fileViewByKey[`${SESSION}::assets/logo.png`]).toMatchObject({
+      scrollTop: 442,
+      scrollLeft: 524,
+    })
+  })
+
+  it('renders markdown through the markdown surface', () => {
+    seedEntry('docs/README.md', { state: 'ok', previewType: 'text', content: '# Title' })
+    renderTab('docs/README.md')
+
+    expect(screen.getByTestId('markdown-surface')).toHaveTextContent('# Title')
+    expect(screen.queryByTestId('code-surface')).toBeNull()
+  })
+
+  describe('documents', () => {
+    it.each(['pdf', 'docx', 'xlsx'] as const)('hands a %s to the document surface, not to the text viewers', (previewType) => {
+      seedEntry(`out/file.${previewType}`, { state: 'ok', previewType, version: 'v7' })
+      renderTab(`out/file.${previewType}`)
+
+      const surface = screen.getByTestId('document-surface')
+      expect(surface).toHaveAttribute('data-preview-type', previewType)
+      expect(surface).toHaveAttribute('data-version', 'v7')
+      expect(surface).toHaveAttribute('data-absolute-path', `/repo/out/file.${previewType}`)
+      expect(screen.queryByTestId('code-surface')).toBeNull()
+      expect(screen.queryByTestId('markdown-surface')).toBeNull()
+    })
+
+    it('lets a table document hand a selection of its source text to the chat, as a text file does', () => {
+      seedEntry('data/results.csv', { state: 'ok', previewType: 'xlsx', version: 'v1' })
+      renderTab('data/results.csv')
+
+      fireEvent.click(screen.getByRole('button', { name: 'add source selection' }))
+
+      expect(useWorkspaceChatContextStore.getState().referencesBySession[SESSION]).toMatchObject([
+        { kind: 'code-selection', path: 'data/results.csv', name: 'results.csv', lineStart: 2, lineEnd: 2, quote: 'a,b' },
+      ])
+    })
+
+    it('passes the position this file was last left at, for the viewer to restore once it has laid out', () => {
+      seedEntry('out/thesis.pdf', { state: 'ok', previewType: 'pdf', version: 'v1' })
+      useWorkspaceContentStore.setState({
+        fileViewByKey: { [`${SESSION}::out/thesis.pdf`]: { scrollTop: 320, scrollLeft: 0 } },
+      })
+      renderTab('out/thesis.pdf')
+
+      expect(screen.getByTestId('document-surface')).toHaveAttribute('data-initial-scroll-top', '320')
+    })
+
+    it('does not overwrite a saved scroll position with 0 while the viewer has nothing to scroll yet', () => {
+      // Regression anchor. A rendered document lays out asynchronously, so its
+      // scroll container is empty when this panel first looks at it: assigning the
+      // saved offset clamps to 0, and the position that was then written back
+      // erased where the reader had been.
+      seedEntry('out/thesis.pdf', { state: 'ok', previewType: 'pdf', version: 'v1' })
+      useWorkspaceContentStore.setState({
+        fileViewByKey: { [`${SESSION}::out/thesis.pdf`]: { scrollTop: 320, scrollLeft: 0, zoom: 1.5 } },
+      })
+
+      renderTab('out/thesis.pdf')
+
+      expect(useWorkspaceContentStore.getState().fileViewByKey[`${SESSION}::out/thesis.pdf`]).toEqual({
+        scrollTop: 320,
+        scrollLeft: 0,
+        zoom: 1.5,
+      })
+    })
+
+    it('still records where the reader scrolls a deferred viewer to', () => {
+      seedEntry('out/thesis.pdf', { state: 'ok', previewType: 'pdf', version: 'v1' })
+      renderTab('out/thesis.pdf')
+      const scroller = screen.getByTestId('deferred-scroller')
+
+      Object.defineProperty(scroller, 'scrollTop', { value: 480, configurable: true })
+      fireEvent.scroll(scroller)
+
+      expect(useWorkspaceContentStore.getState().fileViewByKey[`${SESSION}::out/thesis.pdf`]).toMatchObject({ scrollTop: 480 })
+    })
+
+    it('still restores a saved position onto a surface that renders immediately', () => {
+      // The counterpart of the guard above: text surfaces have their content on
+      // the first render, and restoring them must keep working.
+      seedEntry('src/a.ts', { state: 'ok', previewType: 'text', content: 'const x = 1' })
+      useWorkspaceContentStore.setState({
+        fileViewByKey: { [`${SESSION}::src/a.ts`]: { scrollTop: 250, scrollLeft: 0 } },
+      })
+
+      renderTab('src/a.ts')
+
+      expect((screen.getByTestId('code-surface') as HTMLElement).scrollTop).toBe(250)
+    })
+  })
+
+  describe('a way out when the file cannot be shown', () => {
+    it.each(['too_large', 'binary', 'error'] as const)('offers the system app for %s', (state) => {
+      seedEntry('out/report.docx', { state, error: state === 'error' ? 'boom' : undefined })
+      renderTab('out/report.docx')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Open in system app' }))
+
+      expect(openLocalFileWithSystem).toHaveBeenCalledWith('/repo/out/report.docx')
+    })
+
+    it('offers nothing for a file that is not there', () => {
+      seedEntry('out/report.docx', { state: 'missing' })
+      renderTab('out/report.docx')
+
+      expect(screen.queryByRole('button', { name: 'Open in system app' })).toBeNull()
+    })
+
+    it('offers nothing until the workdir is known, since a relative path would open nothing', () => {
+      useWorkspaceContentStore.setState({ statusBySession: {} })
+      seedEntry('out/report.docx', { state: 'binary' })
+      renderTab('out/report.docx')
+
+      expect(screen.queryByRole('button', { name: 'Open in system app' })).toBeNull()
+    })
+
+    it('offers the system app beside an image too', () => {
+      seedEntry('assets/logo.png', { state: 'ok', previewType: 'image', dataUrl: 'data:image/png;base64,AAAA' })
+      renderTab('assets/logo.png')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Open in system app' }))
+
+      expect(openLocalFileWithSystem).toHaveBeenCalledWith('/repo/assets/logo.png')
+    })
+  })
+
+  it('renders everything else as code, with the language the server detected', () => {
+    seedEntry('src/a.ts', { state: 'ok', previewType: 'text', content: 'const x = 1', language: 'typescript' })
+    renderTab('src/a.ts')
+
+    const surface = screen.getByTestId('code-surface')
+    expect(surface).toHaveTextContent('const x = 1')
+    expect(surface).toHaveAttribute('data-language', 'typescript')
+  })
+
+  it('invites the user to pick a file when the tab has no path yet', () => {
+    renderTab('')
+
+    expect(screen.getByTestId('file-tree-pane')).toBeVisible()
+    expect(loadFile).not.toHaveBeenCalled()
+  })
+})
+
+describe('refresh', () => {
+  it('forces a re-read on request', () => {
+    seedEntry('src/a.ts', { state: 'ok', content: 'const x = 1' })
+    renderTab('src/a.ts')
+
+    fireEvent.click(screen.getByTestId('workspace-file-open-with'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Refresh workspace' }))
+
+    expect(loadFile).toHaveBeenLastCalledWith(SESSION, 'src/a.ts', { force: true })
+  })
+
+  it('keeps the last good content on screen when a refresh fails, and says so', () => {
+    // Regression anchor: blanking the pane on a failed refresh loses whatever
+    // the user was reading, and the failure is usually transient (the file was
+    // mid-write). The store models this as `refreshError` precisely so the
+    // content and the failure can be on screen at the same time.
+    seedEntry('src/a.ts', {
+      state: 'ok',
+      previewType: 'text',
+      content: 'const x = 1',
+      refreshError: 'EBUSY: resource busy',
+    })
+    renderTab('src/a.ts')
+
+    expect(screen.getByTestId('code-surface')).toHaveTextContent('const x = 1')
+    expect(screen.getByRole('status')).toHaveTextContent('EBUSY: resource busy')
+  })
+
+  it('shows no failure notice while the content is current', () => {
+    seedEntry('src/a.ts', { state: 'ok', previewType: 'text', content: 'const x = 1' })
+    renderTab('src/a.ts')
+
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+})
+
+describe('file tree', () => {
+  it.each([undefined, { line: 4 }])('restores a hidden preview when a chat link reopens the same file (%j)', (reveal) => {
+    const store = useWorkspaceStore.getState()
+    const id = store.openTarget(SESSION, { kind: 'file', path: 'src/a.ts' })
+    const getTab = () => useWorkspaceStore.getState().bySession[SESSION]?.tabs.find((tab) => tab.id === id) as WorkspaceFileTabModel
+    seedEntry('src/a.ts', { content: 'first', previewType: 'text' })
+    const view = render(<WorkspaceFileTab sessionId={SESSION} tab={getTab()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Hide preview' }))
+    expect(screen.getByTestId('code-surface')).not.toBeVisible()
+    store.openTarget(SESSION, { kind: 'file', path: 'src/a.ts', reveal })
+    view.rerender(<WorkspaceFileTab sessionId={SESSION} tab={getTab()} />)
+    expect(screen.getByTestId('code-surface')).toBeVisible()
+  })
+
+  it('hides and restores the preview without losing the tree or selected file', () => {
+    seedEntry('src/a.ts', { content: 'const x = 1', previewType: 'text' })
+    renderTab('src/a.ts')
+    fireEvent.click(screen.getByTestId('workspace-file-tree-toggle'))
+    fireEvent.click(screen.getByRole('button', { name: 'Hide preview' }))
+    expect(screen.getByTestId('workspace-file-preview')).not.toBeVisible()
+    expect(screen.getByTestId('file-tree-pane')).toBeVisible()
+    expect(screen.getByTestId('file-tree-pane')).toHaveAttribute('data-selected', 'src/a.ts')
+    expect(screen.getByTestId('workspace-tree-sidebar')).toHaveStyle({ width: '100%', maxWidth: '100%' })
+    expect(screen.queryByTestId('workspace-file-tree-toggle')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Show preview' }))
+    expect(screen.getByTestId('code-surface')).toBeVisible()
+    expect(screen.getByTestId('file-tree-pane')).toBeVisible()
+  })
+
+  it('shows the preview when another file is selected from tree-only mode', () => {
+    seedEntry('src/a.ts', { content: 'first', previewType: 'text' })
+    seedEntry('src/other.ts', { content: 'second', previewType: 'text' })
+    const view = renderTab('src/a.ts')
+    fireEvent.click(screen.getByRole('button', { name: 'Hide preview' }))
+    fireEvent.click(screen.getByRole('button', { name: 'tree row' }))
+    view.rerender(<WorkspaceFileTab sessionId={SESSION} tab={fileTab('src/other.ts')} />)
+    expect(screen.getByTestId('code-surface')).toBeVisible()
+    expect(screen.getByTestId('code-surface')).toHaveTextContent('second')
+  })
+
+  it('keeps the tree beside the content instead of replacing one with the other', () => {
+    // The previous panel hid its navigation the moment a file opened, so
+    // browsing a repository made the structure appear and disappear.
+    seedEntry('src/a.ts', { state: 'ok', previewType: 'text', content: 'const x = 1' })
+    renderTab('src/a.ts')
+
+    expect(screen.getByTestId('file-tree-pane')).toBeInTheDocument()
+    expect(screen.getByTestId('code-surface')).toBeInTheDocument()
+    expect(screen.getByTestId('file-tree-pane')).toHaveAttribute('data-selected', 'src/a.ts')
+  })
+
+  it('collapses the tree without dropping the content', () => {
+    // Narrow widths give the space to the content, because the content is what
+    // the user asked for.
+    seedEntry('src/a.ts', { state: 'ok', previewType: 'text', content: 'const x = 1' })
+    renderTab('src/a.ts')
+
+    const toggle = screen.getByTestId('workspace-file-tree-toggle')
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(toggle)
+
+    expect(screen.getByTestId('file-tree-pane')).not.toBeVisible()
+    expect(screen.getByTestId('code-surface')).toBeInTheDocument()
+    expect(screen.getByTestId('workspace-file-tree-toggle')).toHaveAttribute('aria-pressed', 'false')
+
+    fireEvent.click(screen.getByTestId('workspace-file-tree-toggle'))
+    expect(screen.getByTestId('file-tree-pane')).toBeInTheDocument()
+  })
+
+  it('opens every tree pick as a permanent tab of its own', () => {
+    renderTab('src/a.ts')
+
+    fireEvent.click(screen.getByRole('button', { name: 'tree row' }))
+    fireEvent.click(screen.getByRole('button', { name: 'second tree row' }))
+
+    // Ten picks must mean ten tabs: the old preview slot replaced the previous
+    // pick, so a row of files collapsed into whichever was clicked last.
+    const tabs = useWorkspaceStore.getState().getTabs(SESSION, 'side')
+    expect(tabs).toHaveLength(2)
+    expect(tabs.map((tab) => tab.kind === 'file' && tab.path)).toEqual(['src/other.ts', 'src/third.ts'])
+    expect(tabs.every((tab) => !tab.preview)).toBe(true)
+  })
+
+  it('lets the first pick take over the empty Files tab instead of adding beside it', () => {
+    // Seed the launcher tab the way the "+" menu does, so the store has an
+    // active blank tab that the pick is expected to replace.
+    useWorkspaceStore.getState().openTarget(SESSION, { kind: 'file', path: '' }, { preview: true })
+    renderTab('')
+
+    fireEvent.click(screen.getByRole('button', { name: 'tree row' }))
+
+    const tabs = useWorkspaceStore.getState().getTabs(SESSION, 'side')
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0]).toMatchObject({ kind: 'file', path: 'src/other.ts', preview: false })
+  })
+})
+
+describe('breadcrumb and chat handoff', () => {
+  it.each([
+    { workDir: 'C:\\repo', path: 'C:\\repo\\src\\a.ts', watchPath: undefined },
+    { workDir: 'C:\\repo\\', path: 'c:/repo/src/a.ts', watchPath: undefined },
+    { workDir: '\\\\server\\share\\repo', path: '\\\\server\\share\\repo\\src\\a.ts', watchPath: undefined },
+    { workDir: '/repo', path: '/resolved/alias/a.ts', watchPath: 'src/a.ts' },
+  ])('normalizes the project-relative breadcrumb for $path', ({ workDir, path, watchPath }) => {
+    useWorkspaceContentStore.setState(state => ({ statusBySession: {
+      ...state.statusBySession,
+      [SESSION]: { ...state.statusBySession[SESSION]!, workDir },
+    } }))
+    seedEntry(path, { content: '', watchPath })
+    renderTab(path)
+    expect(screen.getByRole('navigation', { name: 'File path' })).toHaveTextContent(/^reposrca.ts$/)
+  })
+
+  it('identifies the project before the file path', () => {
+    seedEntry('src/a.ts', { content: '' })
+    renderTab('src/a.ts')
+    expect(screen.getByRole('navigation', { name: 'File path' })).toHaveTextContent(/^reposrca.ts$/)
+  })
+
+  it('spells out the path segments of the open file', () => {
+    seedEntry('src/lib/a.ts', { state: 'ok', previewType: 'text', content: '' })
+    renderTab('src/lib/a.ts')
+
+    const breadcrumb = screen.getByRole('navigation', { name: 'File path' })
+    expect(breadcrumb).toHaveTextContent('src')
+    expect(breadcrumb).toHaveTextContent('lib')
+    expect(breadcrumb).toHaveTextContent('a.ts')
+  })
+
+  it('says no file is selected rather than showing an empty breadcrumb', () => {
+    renderTab('')
+    expect(screen.getByRole('navigation', { name: 'File path' })).toHaveTextContent(
+      '/',
+    )
+  })
+
+  it('sends a selection to the chat composer as a located quote', () => {
+    seedEntry('src/a.ts', { state: 'ok', previewType: 'text', content: 'const x = 1' })
+    renderTab('src/a.ts')
+
+    fireEvent.click(screen.getByRole('button', { name: 'add selection' }))
+
+    expect(useWorkspaceChatContextStore.getState().referencesBySession[SESSION]).toMatchObject([
+      {
+        kind: 'code-selection',
+        path: 'src/a.ts',
+        name: 'a.ts',
+        lineStart: 3,
+        lineEnd: 5,
+        quote: 'const x = 1',
+      },
+    ])
+  })
+})
+
+describe('open with', () => {
+  it.each([
+    ['/repo/src/a.ts', '/repo', '/repo/src/a.ts'],
+    ['/tmp/outside.ts', '/repo', '/tmp/outside.ts'],
+    ['C:\\repo\\src\\a.ts', 'C:\\repo', 'C:\\repo\\src\\a.ts'],
+    ['D:/outside/a.ts', 'C:/repo', 'D:/outside/a.ts'],
+    ['\\\\server\\share\\a.ts', 'C:/repo', '\\\\server\\share\\a.ts'],
+    ['src/a.ts', 'C:\\repo\\', 'C:\\repo/src/a.ts'],
+  ])('resolves Open With target %s without prefixing an already absolute path', (path, workDir, expected) => {
+    useWorkspaceContentStore.setState((state) => ({ statusBySession: {
+      ...state.statusBySession,
+      [SESSION]: { ...state.statusBySession[SESSION]!, workDir },
+    } }))
+    seedEntry(path, { state: 'ok', previewType: 'text', content: 'const x = 1' })
+    renderTab(path)
+    fireEvent.click(screen.getByTestId('workspace-file-open-with'))
+    expect(screen.getByTestId('open-with-menu')).toHaveAttribute('data-absolute-path', expected)
+  })
+
+  it('hands the open-with menu an absolute path', async () => {
+    // Regression anchor: `workDir` was an optional prop that the only render
+    // site never passed, so this menu (and the Markdown surface) received
+    // "src/a.ts" and asked the OS to open a path relative to nothing.
+    seedEntry('src/a.ts', { state: 'ok', previewType: 'text', content: 'const x = 1' })
+    renderTab('src/a.ts')
+
+    fireEvent.click(screen.getByTestId('workspace-file-open-with'))
+
+    expect(await screen.findByTestId('open-with-menu')).toHaveAttribute(
+      'data-absolute-path',
+      '/repo/src/a.ts',
+    )
+  })
+
+  it('asks for the workspace status it needs to build that path', () => {
+    renderTab('src/a.ts')
+    expect(loadStatus).toHaveBeenCalledWith(SESSION)
+  })
+
+  it('falls back to the workspace-relative path until the status arrives', () => {
+    // Better a relative path than "/undefined/src/a.ts": the menu can decline,
+    // a fabricated absolute path cannot.
+    useWorkspaceContentStore.setState({ statusBySession: {} })
+    renderTab('src/a.ts')
+
+    fireEvent.click(screen.getByTestId('workspace-file-open-with'))
+
+    expect(screen.getByTestId('open-with-menu')).toHaveAttribute('data-absolute-path', 'src/a.ts')
+  })
+
+  it('announces the menu on its trigger', () => {
+    renderTab('src/a.ts')
+    const trigger = screen.getByTestId('workspace-file-open-with')
+
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+
+    fireEvent.click(trigger)
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('moves focus into the menu and walks it with the arrow keys', () => {
+    renderTab('src/a.ts')
+
+    fireEvent.click(screen.getByTestId('workspace-file-open-with'))
+
+    const items = screen.getAllByRole('menuitem')
+    expect(document.activeElement).toBe(items[0])
+
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(items[1])
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(items[2])
+
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' })
+    // Wraps rather than dead-ends at the bottom.
+    expect(document.activeElement).toBe(items[0])
+
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'End' })
+    expect(document.activeElement).toBe(items[2])
+
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Home' })
+    expect(document.activeElement).toBe(items[0])
+  })
+
+  it('closes on Escape and gives focus back to the trigger', () => {
+    renderTab('src/a.ts')
+    const trigger = screen.getByTestId('workspace-file-open-with')
+
+    fireEvent.click(trigger)
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+
+    expect(screen.queryByRole('menu')).toBeNull()
+    // Escape with focus left in the void is how a keyboard user gets stranded.
+    expect(document.activeElement).toBe(trigger)
+  })
+})
+
+describe('toolbar density', () => {
+  it('matches the shared workbench bar height', () => {
+    // Same 40px as the dock tab strip, review toolbar and browser bar;
+    // switching resources must not move the content boundary.
+    renderTab('src/a.ts')
+    expect(screen.getByTestId('workspace-file-header').className).toContain('h-10')
+  })
+
+  it('opens with the displayed application from the primary half without opening the dropdown', () => {
+    renderTab('src/a.ts')
+    fireEvent.click(screen.getByTestId('workspace-file-open-primary'))
+    expect(openWithState.openTarget).toHaveBeenCalledWith(openWithState.primaryTarget)
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+})

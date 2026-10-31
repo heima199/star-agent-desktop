@@ -1,0 +1,479 @@
+import * as fs from 'fs/promises'
+import { migrateScheduledTasks } from './scheduledTaskMigrations.js'
+import * as os from 'os'
+import * as path from 'path'
+import { randomBytes } from 'node:crypto'
+import { normalizeLegacyDeepSeekManagedEnv } from '../../utils/providerManagedEnvCompat.js'
+import { isOpenAIOfficialProviderId } from './openaiOfficialProvider.js'
+import { isGrokOfficialProviderId } from './grokOfficialProvider.js'
+import {
+  isDeepSeekAccountProviderId,
+  migrateLegacyDeepSeekAccountModels,
+} from './deepseekAccountProvider.js'
+import {
+  BUILT_IN_PROVIDER_IDS,
+  DEEPSEEK_ACCOUNT_PROVIDER_ID,
+  PROVIDER_DEEPSEEK_ACCOUNT_MODEL_IDS_SCHEMA_VERSION,
+  PROVIDER_IMAGE_PROTOCOL_SCHEMA_VERSION,
+  PROVIDER_PROXY_CONFIG_SCHEMA_VERSION,
+  PROVIDER_TOOL_SEARCH_OPT_IN_SCHEMA_VERSION,
+} from '../types/provider.js'
+
+export const CURRENT_PROVIDER_INDEX_SCHEMA_VERSION = PROVIDER_PROXY_CONFIG_SCHEMA_VERSION
+
+type MigrationReport = {
+  migratedEntries: string[]
+  failures: string[]
+}
+
+type JsonObject = Record<string, unknown>
+type LegacyProviderModel = {
+  id: string
+  name?: string
+}
+type LegacyRootProvider = {
+  id: string
+  name: string
+  baseUrl: string
+  apiKey: string
+  models: LegacyProviderModel[]
+  isActive?: boolean
+  notes?: string
+}
+
+let migrationPromise: Promise<MigrationReport> | null = null
+let migrationConfigDir: string | null = null
+
+function getConfigDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+}
+
+function isRecord(value: unknown): value is JsonObject {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isProviderModels(value: unknown): value is JsonObject {
+  return (
+    isRecord(value) &&
+    typeof value.main === 'string' &&
+    (value.fable === undefined || typeof value.fable === 'string') &&
+    typeof value.haiku === 'string' &&
+    typeof value.sonnet === 'string' &&
+    typeof value.opus === 'string'
+  )
+}
+
+function isSavedProvider(value: unknown): value is JsonObject {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.presetId === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.apiKey === 'string' &&
+    typeof value.baseUrl === 'string' &&
+    isProviderModels(value.models)
+  )
+}
+
+function normalizeOfficialProviderModels(value: unknown, sourceSchemaVersion: number): JsonObject {
+  if (!isRecord(value)) return {}
+  const normalized: JsonObject = { ...value }
+  for (const id of BUILT_IN_PROVIDER_IDS) {
+    if (!isProviderModels(value[id])) {
+      delete normalized[id]
+    }
+  }
+  const deepSeekAccountModels = normalized[DEEPSEEK_ACCOUNT_PROVIDER_ID]
+  if (
+    sourceSchemaVersion < PROVIDER_DEEPSEEK_ACCOUNT_MODEL_IDS_SCHEMA_VERSION &&
+    isRecord(deepSeekAccountModels)
+  ) {
+    normalized[DEEPSEEK_ACCOUNT_PROVIDER_ID] = migrateLegacyDeepSeekAccountModels(deepSeekAccountModels)
+  }
+  return normalized
+}
+
+function isLegacyProviderModel(value: unknown): value is LegacyProviderModel {
+  return isRecord(value) && typeof value.id === 'string'
+}
+
+function isLegacyRootProvider(value: unknown): value is LegacyRootProvider {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.baseUrl === 'string' &&
+    typeof value.apiKey === 'string' &&
+    Array.isArray(value.models) &&
+    value.models.every(isLegacyProviderModel)
+  )
+}
+
+function defaultProviderOrder(providers: JsonObject[]): string[] {
+  return [
+    ...providers
+      .map((provider) => provider.id)
+      .filter((id): id is string => typeof id === 'string'),
+    ...BUILT_IN_PROVIDER_IDS,
+  ]
+}
+
+function normalizeProviderOrder(value: unknown, providers: JsonObject[]): string[] {
+  const knownIds = new Set<string>(defaultProviderOrder(providers))
+  const source = Array.isArray(value) ? value : defaultProviderOrder(providers)
+  const seen = new Set<string>()
+  const order: string[] = []
+
+  for (const id of source) {
+    if (typeof id !== 'string' || !knownIds.has(id) || seen.has(id)) continue
+    seen.add(id)
+    order.push(id)
+  }
+
+  for (const id of defaultProviderOrder(providers)) {
+    if (seen.has(id)) continue
+    seen.add(id)
+    order.push(id)
+  }
+
+  return order
+}
+
+function errnoCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(value, null, 2) + '\n'
+}
+
+async function readJsonFile(filePath: string): Promise<{ missing: boolean; value: unknown; raw: string }> {
+  try {
+    const raw = await fs.readFile(filePath, 'utf-8')
+    return { missing: false, value: JSON.parse(raw), raw }
+  } catch (error) {
+    if (errnoCode(error) === 'ENOENT') {
+      return { missing: true, value: undefined, raw: '' }
+    }
+    throw error
+  }
+}
+
+async function backupFile(filePath: string, suffix: string): Promise<void> {
+  const backupPath = `${filePath}.${suffix}-${Date.now()}-${randomBytes(3).toString('hex')}`
+  await fs.copyFile(filePath, backupPath)
+}
+
+async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  const tmpPath = `${filePath}.tmp.${Date.now()}-${randomBytes(3).toString('hex')}`
+  try {
+    await fs.writeFile(tmpPath, stableStringify(value), 'utf-8')
+    await fs.rename(tmpPath, filePath)
+  } catch (error) {
+    await fs.unlink(tmpPath).catch(() => {})
+    throw error
+  }
+}
+
+async function quarantineMalformedFile(filePath: string): Promise<void> {
+  const invalidPath = `${filePath}.invalid-${Date.now()}-${randomBytes(3).toString('hex')}`
+  await fs.rename(filePath, invalidPath)
+}
+
+function migrateProvidersIndex(value: unknown): JsonObject {
+  if (!isRecord(value) || !Array.isArray(value.providers)) {
+    return {
+      schemaVersion: CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
+      activeId: null,
+      providers: [],
+      providerOrder: [...BUILT_IN_PROVIDER_IDS],
+      officialProviderModels: {},
+    }
+  }
+
+  const {
+    activeProviderId: _legacyActiveProviderId,
+    providerOrder: rawProviderOrder,
+    officialProviderModels: rawOfficialProviderModels,
+    ...rest
+  } = value
+  const sourceSchemaVersion = typeof value.schemaVersion === 'number' ? value.schemaVersion : 1
+  // v5 introduces optional requestCompatibility. An absent object is the
+  // automatic policy, so upgrading v4 must not materialize a numeric budget
+  // from old Claude defaults. Spreading providers also preserves future fields.
+  const providers = value.providers
+    .filter(isSavedProvider)
+    .map((provider) => sourceSchemaVersion < PROVIDER_TOOL_SEARCH_OPT_IN_SCHEMA_VERSION
+      ? { ...provider, toolSearchEnabled: false }
+      : provider)
+    .map((provider) => {
+      const imageGeneration = provider.imageGeneration
+      if (sourceSchemaVersion >= PROVIDER_IMAGE_PROTOCOL_SCHEMA_VERSION ||
+        !isRecord(imageGeneration) || typeof imageGeneration.model !== 'string' ||
+        !imageGeneration.model.trim() || imageGeneration.protocol !== undefined) {
+        return provider
+      }
+      return {
+        ...provider,
+        imageGeneration: { ...imageGeneration, protocol: 'openai_images' },
+      }
+    })
+  const rawActiveId =
+    typeof value.activeId === 'string'
+      ? value.activeId
+      : typeof _legacyActiveProviderId === 'string'
+        ? _legacyActiveProviderId
+        : null
+  const activeId = rawActiveId && (
+    providers.some((provider) => provider.id === rawActiveId) ||
+    isOpenAIOfficialProviderId(rawActiveId) ||
+    isGrokOfficialProviderId(rawActiveId) ||
+    isDeepSeekAccountProviderId(rawActiveId)
+  )
+    ? rawActiveId
+    : null
+
+  return {
+    ...rest,
+    schemaVersion: CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
+    activeId,
+    providers,
+    providerOrder: normalizeProviderOrder(rawProviderOrder, providers),
+    officialProviderModels: normalizeOfficialProviderModels(rawOfficialProviderModels, sourceSchemaVersion),
+  }
+}
+
+function migrateManagedSettings(value: unknown): JsonObject {
+  if (!isRecord(value)) return {}
+  if (value.env !== undefined && !isRecord(value.env)) {
+    return { ...value, env: {} }
+  }
+  if (isRecord(value.env)) {
+    const { env, changed } = normalizeLegacyDeepSeekManagedEnv(value.env as Record<string, string>)
+    if (changed) return { ...value, env }
+  }
+  return value
+}
+
+async function migrateJsonEntry(
+  filePath: string,
+  entryName: string,
+  report: MigrationReport,
+  migrate: (value: unknown) => JsonObject,
+): Promise<void> {
+  try {
+    const current = await readJsonFile(filePath)
+    if (current.missing) return
+
+    const migrated = migrate(current.value)
+    if (stableStringify(migrated) === stableStringify(current.value)) return
+
+    await backupFile(filePath, 'bak-before-migration')
+    await writeJsonFile(filePath, migrated)
+    report.migratedEntries.push(entryName)
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      try {
+        await quarantineMalformedFile(filePath)
+        await writeJsonFile(filePath, {})
+        report.migratedEntries.push(entryName)
+        return
+      } catch (recoveryError) {
+        report.failures.push(`${entryName}: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`)
+        return
+      }
+    }
+
+    report.failures.push(`${entryName}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+function legacyProviderModelId(
+  provider: LegacyRootProvider,
+  preferredModelId: unknown,
+): string {
+  if (
+    typeof preferredModelId === 'string' &&
+    provider.models.some((model) => model.id === preferredModelId)
+  ) {
+    return preferredModelId
+  }
+
+  return provider.models[0]?.id ?? ''
+}
+
+function migrateLegacyRootProvidersConfig(value: unknown): JsonObject | null {
+  if (!isRecord(value) || !Array.isArray(value.providers)) {
+    return null
+  }
+
+  const providers = value.providers
+    .filter(isLegacyRootProvider)
+    .map((provider) => {
+      const main = legacyProviderModelId(provider, value.activeModel)
+      return {
+        id: provider.id,
+        presetId: 'custom',
+        name: provider.name,
+        apiKey: provider.apiKey,
+        baseUrl: provider.baseUrl,
+        apiFormat: 'anthropic',
+        models: {
+          main,
+          haiku: main,
+          sonnet: main,
+          opus: main,
+        },
+        ...(provider.notes !== undefined && { notes: provider.notes }),
+      }
+    })
+
+  if (providers.length === 0) {
+    return null
+  }
+
+  const activeLegacyProvider = value.providers
+    .filter(isLegacyRootProvider)
+    .find((provider) =>
+      provider.isActive === true ||
+      (typeof value.activeModel === 'string' &&
+        provider.models.some((model) => model.id === value.activeModel)),
+    )
+  const activeId =
+    activeLegacyProvider && providers.some((provider) => provider.id === activeLegacyProvider.id)
+      ? activeLegacyProvider.id
+      : null
+
+  return {
+    schemaVersion: CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
+    activeId,
+    providers,
+    providerOrder: normalizeProviderOrder(undefined, providers),
+  }
+}
+
+function buildManagedSettingsForMigratedProvider(provider: JsonObject | undefined): JsonObject | null {
+  if (!provider || !isProviderModels(provider.models)) return null
+  const apiKey = typeof provider.apiKey === 'string' ? provider.apiKey : ''
+  const baseUrl = typeof provider.baseUrl === 'string' ? provider.baseUrl : ''
+  if (!apiKey || !baseUrl) return null
+
+  return {
+    env: {
+      ANTHROPIC_BASE_URL: baseUrl,
+      ANTHROPIC_AUTH_TOKEN: apiKey,
+      ANTHROPIC_MODEL: provider.models.main,
+      ...(provider.models.fable ? { ANTHROPIC_DEFAULT_FABLE_MODEL: provider.models.fable } : {}),
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: provider.models.haiku,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: provider.models.sonnet,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: provider.models.opus,
+    },
+  }
+}
+
+async function migrateLegacyRootProviders(
+  configDir: string,
+  ccHahaDir: string,
+  report: MigrationReport,
+): Promise<void> {
+  const targetPath = path.join(ccHahaDir, 'providers.json')
+  try {
+    await fs.access(targetPath)
+    return
+  } catch (error) {
+    if (errnoCode(error) !== 'ENOENT') {
+      report.failures.push(`cc-haha/providers.json: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+  }
+
+  const legacyPath = path.join(configDir, 'providers.json')
+
+  try {
+    const legacy = await readJsonFile(legacyPath)
+    if (legacy.missing) return
+
+    const migrated = migrateLegacyRootProvidersConfig(legacy.value)
+    if (!migrated) return
+
+    await writeJsonFile(targetPath, migrated)
+    report.migratedEntries.push('providers.json -> cc-haha/providers.json')
+
+    const settingsPath = path.join(ccHahaDir, 'settings.json')
+    const settings = await readJsonFile(settingsPath).catch(() => ({ missing: false, value: undefined, raw: '' }))
+    if (!settings.missing) return
+
+    const activeId = typeof migrated.activeId === 'string' ? migrated.activeId : null
+    const activeProvider = Array.isArray(migrated.providers)
+      ? migrated.providers.find((provider) => isRecord(provider) && provider.id === activeId)
+      : undefined
+    const managedSettings = buildManagedSettingsForMigratedProvider(
+      isRecord(activeProvider) ? activeProvider : undefined,
+    )
+    if (managedSettings) {
+      await writeJsonFile(settingsPath, managedSettings)
+      report.migratedEntries.push('providers.json -> cc-haha/settings.json')
+    }
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      report.failures.push(`providers.json: ${error.message}`)
+      return
+    }
+    report.failures.push(`providers.json: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+async function runPersistentStorageMigrations(configDir: string): Promise<MigrationReport> {
+  const report: MigrationReport = { migratedEntries: [], failures: [] }
+  const ccHahaDir = path.join(configDir, 'cc-haha')
+
+  // Task definitions are user-authored data: never quarantine/reset malformed JSON.
+  const tasksPath = path.join(configDir, 'scheduled_tasks.json')
+  try {
+    const current = await readJsonFile(tasksPath)
+    if (!current.missing) {
+      const migrated = migrateScheduledTasks(current.value)
+      if (stableStringify(migrated) !== stableStringify(current.value)) {
+        await backupFile(tasksPath, 'bak-before-migration')
+        await writeJsonFile(tasksPath, migrated)
+        report.migratedEntries.push('scheduled_tasks.json')
+      }
+    }
+  } catch (error) {
+    report.failures.push(`scheduled_tasks.json: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  await migrateLegacyRootProviders(configDir, ccHahaDir, report)
+
+  await migrateJsonEntry(
+    path.join(ccHahaDir, 'providers.json'),
+    'cc-haha/providers.json',
+    report,
+    migrateProvidersIndex,
+  )
+  await migrateJsonEntry(
+    path.join(ccHahaDir, 'settings.json'),
+    'cc-haha/settings.json',
+    report,
+    migrateManagedSettings,
+  )
+
+  return report
+}
+
+export function ensurePersistentStorageUpgraded(): Promise<MigrationReport> {
+  const configDir = getConfigDir()
+  if (!migrationPromise || migrationConfigDir !== configDir) {
+    migrationConfigDir = configDir
+    migrationPromise = runPersistentStorageMigrations(configDir)
+  }
+  return migrationPromise
+}
+
+export function resetPersistentStorageMigrationsForTests(): void {
+  migrationPromise = null
+  migrationConfigDir = null
+}

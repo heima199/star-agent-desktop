@@ -1,0 +1,656 @@
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import * as fs from 'fs/promises'
+import * as os from 'os'
+import * as path from 'path'
+
+import { handleProvidersApi } from '../api/providers.js'
+import { PROVIDER_PRESETS, ProviderPresetSchema } from '../config/providerPresets.js'
+import { buildProviderManagedEnv, providerNeedsProxy } from '../services/providerRuntimeEnv.js'
+import { resolveModelApiFormat } from '../../shared/modelApiFormats.js'
+import { resolveUpstreamHeaders } from '../proxy/upstreamHeaders.js'
+
+let tmpDir: string
+let originalConfigDir: string | undefined
+
+test.each(['gemini_native', 'xai_images'] as const)('keeps a preset image protocol %s through runtime configuration', protocol => {
+  const preset = ProviderPresetSchema.parse({
+    ...PROVIDER_PRESETS.find(p => p.id === 'apismart')!,
+    id: 'native-image-fixture', defaultImageGeneration: { model: 'fixture-image-alias', protocol },
+  })
+  const env = buildProviderManagedEnv({
+    id: 'fixture', name: 'Fixture', presetId: preset.id, apiKey: 'fake-key',
+    baseUrl: preset.baseUrl, apiFormat: preset.apiFormat, models: preset.defaultModels,
+    imageGeneration: preset.defaultImageGeneration,
+  })
+  expect(env.CC_HAHA_IMAGE_PROTOCOL).toBe(protocol)
+})
+
+beforeEach(async () => {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'provider-presets-test-'))
+  originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = tmpDir
+})
+
+afterEach(async () => {
+  if (originalConfigDir !== undefined) {
+    process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+  } else {
+    delete process.env.CLAUDE_CONFIG_DIR
+  }
+  await fs.rm(tmpDir, { recursive: true, force: true })
+})
+
+function makeRequest(
+  method: string,
+  urlStr: string,
+  body?: Record<string, unknown>,
+): { req: Request; url: URL; segments: string[] } {
+  const url = new URL(urlStr, 'http://localhost:3456')
+  const init: RequestInit = { method }
+  if (body) {
+    init.headers = { 'Content-Type': 'application/json' }
+    init.body = JSON.stringify(body)
+  }
+  const req = new Request(url.toString(), init)
+  const segments = url.pathname.split('/').filter(Boolean)
+  return { req, url, segments }
+}
+
+describe('provider presets API', () => {
+  test('exposes Flash with 1M in every DeepSeek slot and carries it into the runtime', async () => {
+    const { req, url, segments } = makeRequest('GET', '/api/providers/presets')
+    const response = await handleProvidersApi(req, url, segments)
+    const { presets } = await response.json()
+    const preset = presets.find((entry: { id: string }) => entry.id === 'deepseek')
+    expect(preset.defaultModels).toEqual({
+      main: 'deepseek-flash[1m]',
+      fable: 'deepseek-flash[1m]',
+      haiku: 'deepseek-flash[1m]',
+      sonnet: 'deepseek-flash[1m]',
+      opus: 'deepseek-flash[1m]',
+    })
+    const env = buildProviderManagedEnv({
+      id: 'deepseek-test', presetId: preset.id, name: preset.name,
+      baseUrl: preset.baseUrl, apiFormat: preset.apiFormat,
+      authStrategy: preset.authStrategy, apiKey: 'fake-deepseek-key',
+      models: preset.defaultModels,
+    })
+    for (const key of [
+      'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL',
+      'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
+      'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    ]) {
+      expect(env[key]).toBe('deepseek-flash[1m]')
+    }
+    expect(JSON.parse(env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS)['deepseek-flash']).toBe(1_000_000)
+  })
+
+  test('exposes AruHub first among sponsors with signup copy and the new badge', async () => {
+    const { req, url, segments } = makeRequest('GET', '/api/providers/presets')
+    const response = await handleProvidersApi(req, url, segments)
+    const { presets } = await response.json()
+    const featured = presets.filter((preset: { featured?: boolean }) => preset.featured)
+    // STAR, the operator's own service, leads the featured row; the sponsors follow it.
+    expect(featured[0]).toMatchObject({ id: 'star-saas' })
+    const sponsors = featured.slice(1)
+    expect(sponsors[0]).toMatchObject({
+      id: 'aruhub',
+      baseUrl: 'https://agent.aruhub.com',
+      apiFormat: 'anthropic',
+      authStrategy: 'api_key',
+      apiKeyUrl: 'https://aruhub.com/sign-up?aff=Z54g',
+      isNew: true,
+      needsApiKey: true,
+      defaultModels: { main: 'claude-opus-5-5', haiku: 'claude-sonnet-5-5', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5' },
+    })
+    expect(sponsors[0].promoText).toContain('注册即送 1 美元全模型通用额度')
+    const preset = PROVIDER_PRESETS.find((candidate) => candidate.id === 'aruhub')!
+    expect(buildProviderManagedEnv({
+      id: 'aruhub-test', presetId: preset.id, name: preset.name,
+      baseUrl: preset.baseUrl, apiFormat: preset.apiFormat,
+      authStrategy: preset.authStrategy, apiKey: 'fake-aruhub-key',
+      models: preset.defaultModels,
+    })).toMatchObject({
+      ANTHROPIC_MODEL: 'claude-opus-5-5',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5',
+      // AruHub's public catalog lists no Haiku; keep Sonnet for background work.
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-sonnet-5-5',
+    })
+  })
+
+  test('exposes Modelflare second among sponsors with its new badge and Claude 5.5 defaults', async () => {
+    const { req, url, segments } = makeRequest('GET', '/api/providers/presets')
+    const response = await handleProvidersApi(req, url, segments)
+    expect(response.status).toBe(200)
+    const { presets } = await response.json()
+    const featured = presets.filter((preset: { featured?: boolean }) => preset.featured)
+    expect(featured.map((preset: { id: string }) => preset.id))
+      .toEqual(['star-saas', 'aruhub', 'modelflare', 'atlascloud'])
+    const sponsors = featured.slice(1)
+    expect(sponsors[1]).toMatchObject({
+      id: 'modelflare',
+      name: 'Modelflare',
+      baseUrl: 'https://modelflare.dev',
+      apiFormat: 'anthropic',
+      authStrategy: 'auth_token',
+      apiKeyUrl: 'https://modelflare.dev/sign-up?utm_source=github&utm_campaign=cchaha',
+      featured: true,
+      isNew: true,
+      needsApiKey: true,
+      defaultModels: {
+        main: 'claude-opus-5-5',
+        haiku: 'claude-haiku-5-5',
+        sonnet: 'claude-sonnet-5-5',
+        opus: 'claude-opus-5-5',
+      },
+      modelContextWindows: {
+        'claude-opus-5-5': 1000000,
+        'claude-sonnet-5-5': 1000000,
+        'claude-haiku-5-5': 1000000,
+      },
+    })
+
+    const preset = PROVIDER_PRESETS.find((candidate) => candidate.id === 'modelflare')!
+    const env = buildProviderManagedEnv({
+      id: 'modelflare-test', presetId: preset.id, name: preset.name,
+      baseUrl: preset.baseUrl, apiFormat: preset.apiFormat,
+      authStrategy: preset.authStrategy, apiKey: 'fake-modelflare-key',
+      models: preset.defaultModels,
+    })
+    expect(env).toMatchObject({
+      ANTHROPIC_BASE_URL: 'https://modelflare.dev',
+      ANTHROPIC_AUTH_TOKEN: 'fake-modelflare-key',
+      ANTHROPIC_MODEL: 'claude-opus-5-5',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-5-5',
+    })
+    // Token-only providers clear an inherited x-api-key credential explicitly.
+    expect(env.ANTHROPIC_API_KEY).toBe('')
+    expect(JSON.parse(env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS!)).toMatchObject({
+      'claude-opus-5-5': 1000000,
+      'claude-sonnet-5-5': 1000000,
+      'claude-haiku-5-5': 1000000,
+    })
+  })
+
+  // ApiSmart /v1/models and live calls verified these exact IDs on 2026-09-09.
+  // The unsuffixed names in its docs return 503 provider_not_available.
+  test('keeps retired ApiSmart resolvable with its live-verified Chat Completions defaults but off the sponsor row', async () => {
+    const { req, url, segments } = makeRequest('GET', '/api/providers/presets')
+    const response = await handleProvidersApi(req, url, segments)
+    const { presets } = await response.json()
+    expect(presets.find((preset: { id: string }) => preset.id === 'apismart')).toMatchObject({
+      name: 'ApiSmart',
+      defaultImageGeneration: { model: 'doubao-seedream-5-0' },
+      baseUrl: 'https://gw.apismart.ai/v1',
+      apiFormat: 'openai_chat',
+      authStrategy: 'api_key',
+      needsApiKey: true,
+      defaultModels: {
+        main: 'deepseek-v4-pro-0813',
+        haiku: 'deepseek-v4-flash-0731-tem',
+        sonnet: 'deepseek-v4-pro-0813',
+        opus: 'deepseek-v4-pro-0813',
+      },
+      websiteUrl: 'https://www.apismart.ai',
+      deprecated: true,
+    })
+    const apismart = presets.find((preset: { id: string }) => preset.id === 'apismart')
+    expect(apismart.apiKeyUrl).toBeUndefined()
+    expect(apismart.promoText).toBeUndefined()
+    expect(apismart.featured).toBeUndefined()
+    expect(presets.filter((preset: { featured?: boolean }) => preset.featured).map((preset: { id: string }) => preset.id))
+      .not.toContain('apismart')
+  })
+
+  test('GET /api/providers/presets returns the configured presets', async () => {
+    const { req, url, segments } = makeRequest('GET', '/api/providers/presets')
+    const response = await handleProvidersApi(req, url, segments)
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ presets: PROVIDER_PRESETS })
+  })
+
+  test('configured presets include built-in official and custom entries', () => {
+    expect(PROVIDER_PRESETS.some((preset) => preset.id === 'official')).toBe(true)
+    expect(PROVIDER_PRESETS.some((preset) => preset.id === 'custom')).toBe(true)
+  })
+
+  test('local Anthropic-compatible presets appear immediately before custom', () => {
+    expect(PROVIDER_PRESETS.at(-3)?.id).toBe('lmstudio')
+    expect(PROVIDER_PRESETS.at(-2)?.id).toBe('ollama')
+    expect(PROVIDER_PRESETS.at(-1)?.id).toBe('custom')
+  })
+
+  test('configured presets keep current default model ids aligned with official provider docs', () => {
+    const lmstudio = PROVIDER_PRESETS.find((preset) => preset.id === 'lmstudio')
+    const ollama = PROVIDER_PRESETS.find((preset) => preset.id === 'ollama')
+    const deepseek = PROVIDER_PRESETS.find((preset) => preset.id === 'deepseek')
+    const zhipu = PROVIDER_PRESETS.find((preset) => preset.id === 'zhipuglm')
+    const kimi = PROVIDER_PRESETS.find((preset) => preset.id === 'kimi')
+    const minimax = PROVIDER_PRESETS.find((preset) => preset.id === 'minimax')
+    const shengsuanyun = PROVIDER_PRESETS.find((preset) => preset.id === 'shengsuanyun')
+    const atlascloud = PROVIDER_PRESETS.find((preset) => preset.id === 'atlascloud')
+    const xuanshuapi = PROVIDER_PRESETS.find((preset) => preset.id === 'xuanshuapi')
+    const fennoai = PROVIDER_PRESETS.find((preset) => preset.id === 'fennoai')
+    const qiniuai = PROVIDER_PRESETS.find((preset) => preset.id === 'qiniuai')
+
+    expect(lmstudio?.baseUrl).toBe('http://localhost:1234')
+    expect(lmstudio?.apiFormat).toBe('anthropic')
+    expect(lmstudio?.authStrategy).toBe('auth_token_empty_api_key')
+    expect(lmstudio?.defaultModels.main).toBe('qwen/qwen3.6-27b')
+    expect(ollama?.baseUrl).toBe('http://localhost:11434')
+    expect(ollama?.apiFormat).toBe('anthropic')
+    expect(ollama?.authStrategy).toBe('auth_token_empty_api_key')
+    expect(ollama?.defaultModels.main).toBe('qwen3.6:27b')
+    expect(deepseek?.authStrategy).toBe('auth_token')
+    expect(deepseek?.defaultModels.main).toBe('deepseek-flash[1m]')
+    expect(deepseek?.defaultModels.haiku).toBe('deepseek-flash[1m]')
+    expect(deepseek?.defaultModels.sonnet).toBe('deepseek-flash[1m]')
+    expect(deepseek?.defaultModels.opus).toBe('deepseek-flash[1m]')
+    expect(deepseek?.defaultEnv?.CC_HAHA_SEND_DISABLED_THINKING).toBeUndefined()
+    expect(deepseek?.defaultEnv).toEqual({})
+    expect(zhipu?.baseUrl).toBe('https://open.bigmodel.cn/api/anthropic')
+    expect(zhipu?.regionalEndpoints).toEqual([
+      { region: 'cn_zh', baseUrl: 'https://open.bigmodel.cn/api/anthropic' },
+      { region: 'global_en', baseUrl: 'https://api.z.ai/api/anthropic' },
+    ])
+    expect(zhipu?.authStrategy).toBe('auth_token')
+    expect(zhipu?.reasoningProviderKind).toBe('zhipu_standard_api')
+    expect(zhipu?.defaultModels.main).toBe('glm-5.3[1m]')
+    expect(zhipu?.defaultModels.haiku).toBe('glm-5.3-flash[1m]')
+    expect(zhipu?.defaultModels.sonnet).toBe('glm-5.3[1m]')
+    expect(zhipu?.defaultModels.opus).toBe('glm-5.3[1m]')
+    // Presets must not pin a provider-wide auto-compact window: the env is
+    // model-agnostic, so it pinned small-context models at 1M and auto-compact
+    // never fired (#1162). Real windows come from modelContextWindows instead.
+    expect(deepseek?.defaultEnv?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+    expect(zhipu?.defaultEnv?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+    expect(kimi?.baseUrl).toBe('https://api.kimi.com/coding/')
+    expect(kimi?.regionalEndpoints).toBeUndefined()
+    expect(kimi?.authStrategy).toBe('api_key')
+    expect(kimi?.defaultModels.main).toBe('k3')
+    expect(kimi?.defaultEnv?.CC_HAHA_SEND_DISABLED_THINKING).toBeUndefined()
+    expect(kimi?.defaultEnv).toEqual({})
+    expect(minimax?.baseUrl).toBe('https://api.minimaxi.com/anthropic')
+    expect(minimax?.regionalEndpoints).toEqual([
+      { region: 'cn_zh', baseUrl: 'https://api.minimaxi.com/anthropic' },
+      { region: 'global_en', baseUrl: 'https://api.minimax.io/anthropic' },
+    ])
+    expect(minimax?.authStrategy).toBe('auth_token')
+    expect(minimax?.defaultModels.main).toBe('MiniMax-M3[1m]')
+    expect(minimax?.defaultEnv?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+    expect(minimax?.defaultEnv).toEqual({})
+    expect(minimax?.modelContextWindows?.['MiniMax-M3']).toBe(1000000)
+    expect(shengsuanyun?.baseUrl).toBe('https://router.shengsuanyun.com/api')
+    expect(shengsuanyun?.authStrategy).toBe('auth_token')
+    expect(shengsuanyun?.defaultModels.main).toBe('anthropic/claude-sonnet-4.6')
+    expect(shengsuanyun?.defaultModels.haiku).toBe('anthropic/claude-haiku-4.5:thinking')
+    expect(shengsuanyun?.modelContextWindows?.['anthropic/claude-sonnet-4.6']).toBe(1000000)
+    expect(atlascloud?.baseUrl).toBe('https://api.atlascloud.ai')
+    expect(atlascloud?.apiFormat).toBe('openai_chat')
+    expect(atlascloud?.authStrategy).toBe('api_key')
+    expect(atlascloud?.defaultModels).toEqual({
+      main: 'deepseek-ai/deepseek-v4-pro',
+      haiku: 'deepseek-ai/deepseek-v4-pro',
+      sonnet: 'deepseek-ai/deepseek-v4-pro',
+      opus: 'deepseek-ai/deepseek-v4-pro',
+    })
+    expect(atlascloud?.modelContextWindows?.['deepseek-ai/deepseek-v4-pro']).toBe(1000000)
+    expect(xuanshuapi?.baseUrl).toBe('https://www.xuanshuapi.com')
+    expect(xuanshuapi?.apiFormat).toBe('anthropic')
+    expect(xuanshuapi?.authStrategy).toBe('auth_token')
+    expect(xuanshuapi?.defaultModels.main).toBe('claude-opus-5')
+    expect(xuanshuapi?.defaultModels.haiku).toBe('claude-haiku-4-5')
+    expect(xuanshuapi?.defaultModels.sonnet).toBe('claude-sonnet-5')
+    expect(xuanshuapi?.defaultModels.opus).toBe('claude-opus-5')
+    expect(xuanshuapi?.modelContextWindows?.['claude-opus-5']).toBe(1000000)
+    // Both endpoints below are the Anthropic-compatible root: Claude Code appends
+    // /v1/messages itself, so a /v1 or /anthropic suffix here would 404.
+    expect(fennoai?.baseUrl).toBe('https://api.fenno.ai')
+    expect(fennoai?.apiFormat).toBe('anthropic')
+    expect(fennoai?.authStrategy).toBe('auth_token')
+    expect(qiniuai?.baseUrl).toBe('https://api.qnaigc.com')
+    expect(qiniuai?.apiFormat).toBe('anthropic')
+    expect(qiniuai?.authStrategy).toBe('auth_token')
+    // Both gateways front a catalog that shifts on their side, so the preset ships
+    // no model ids: the user fetches the live list and picks. Pinning a default
+    // here would hand out a model their plan may not even carry.
+    for (const preset of [fennoai, qiniuai]) {
+      expect(preset?.defaultModels).toEqual({ main: '', haiku: '', sonnet: '', opus: '' })
+      // A pinned subagent model would reintroduce exactly that guess.
+      expect(preset?.defaultEnv).toEqual({})
+    }
+    // The window table stays: it is keyed by model id, so it keeps paying off
+    // once the user picks one — including ids the built-in table cannot resolve
+    // (claude-opus-5, and every namespaced 七牛云 id).
+    expect(fennoai?.modelContextWindows?.['claude-opus-5']).toBe(1000000)
+    expect(qiniuai?.modelContextWindows?.['deepseek/deepseek-v4-pro']).toBe(1000000)
+  })
+
+  test('configured presets can expose optional API key and promo metadata', () => {
+    const lmstudio = PROVIDER_PRESETS.find((preset) => preset.id === 'lmstudio')
+    const ollama = PROVIDER_PRESETS.find((preset) => preset.id === 'ollama')
+    const deepseek = PROVIDER_PRESETS.find((preset) => preset.id === 'deepseek')
+    const zhipu = PROVIDER_PRESETS.find((preset) => preset.id === 'zhipuglm')
+    const kimi = PROVIDER_PRESETS.find((preset) => preset.id === 'kimi')
+    const minimax = PROVIDER_PRESETS.find((preset) => preset.id === 'minimax')
+    const shengsuanyun = PROVIDER_PRESETS.find((preset) => preset.id === 'shengsuanyun')
+    const xuanshuapi = PROVIDER_PRESETS.find((preset) => preset.id === 'xuanshuapi')
+    const fennoai = PROVIDER_PRESETS.find((preset) => preset.id === 'fennoai')
+    const qiniuai = PROVIDER_PRESETS.find((preset) => preset.id === 'qiniuai')
+    const atlascloud = PROVIDER_PRESETS.find((preset) => preset.id === 'atlascloud')
+    const custom = PROVIDER_PRESETS.find((preset) => preset.id === 'custom')
+
+    expect(lmstudio?.needsApiKey).toBe(false)
+    expect(lmstudio?.promoText).toContain('http://localhost:1234')
+    expect(lmstudio?.promoText).toContain('200K')
+    expect(lmstudio?.defaultEnv).toEqual({
+      ANTHROPIC_AUTH_TOKEN: 'lmstudio',
+    })
+    expect(ollama?.needsApiKey).toBe(false)
+    expect(ollama?.promoText).toContain('http://localhost:11434')
+    expect(ollama?.promoText).toContain('200K')
+    expect(ollama?.defaultEnv).toEqual({
+      ANTHROPIC_AUTH_TOKEN: 'ollama',
+    })
+    expect(deepseek?.apiKeyUrl).toBe('https://platform.deepseek.com/api_keys')
+    expect(deepseek?.modelContextWindows?.['deepseek-v4-pro']).toBe(1000000)
+    expect(deepseek?.modelContextWindows?.['deepseek-v4-flash']).toBe(1000000)
+    expect(zhipu?.apiKeyUrl).toBe('https://www.bigmodel.cn/invite?icode=d41B2qi8Z5xNwTGLNPPF3OZLO2QH3C0EBTSr%2BArzMw4%3D')
+    expect(zhipu?.promoText).toContain('cc-haha')
+    expect(zhipu?.defaultEnv?.CC_HAHA_SEND_DISABLED_THINKING).toBeUndefined()
+    expect(zhipu?.modelContextWindows?.['glm-5.3']).toBe(1000000)
+    expect(zhipu?.modelContextWindows?.['glm-5.3-flash']).toBe(1000000)
+    expect(zhipu?.modelContextWindows?.['glm-5.2']).toBe(1000000)
+    expect(zhipu?.modelContextWindows?.['glm-5.1']).toBe(200000)
+    expect(zhipu?.modelContextWindows?.['glm-4.7']).toBe(200000)
+    expect(zhipu?.modelContextWindows?.['glm-4.5-air']).toBe(128000)
+    expect(kimi?.apiKeyUrl).toBe('https://www.kimi.com/code/console')
+    expect(kimi?.modelContextWindows?.k3).toBe(262144)
+    expect(kimi?.modelContextWindows?.['kimi-for-coding']).toBe(262144)
+    expect(kimi?.modelContextWindows?.['kimi-for-coding-highspeed']).toBe(262144)
+    expect(minimax?.apiKeyUrl).toBe('https://platform.minimaxi.com/subscribe/token-plan?code=1TG2Cseab2&source=link')
+    // Retired: no referral link, no promo copy, no featured slot.
+    expect(shengsuanyun?.apiKeyUrl).toBeUndefined()
+    expect(shengsuanyun?.promoText).toBeUndefined()
+    expect(shengsuanyun?.featured).toBeUndefined()
+    expect(shengsuanyun?.defaultEnv).toEqual({
+      API_TIMEOUT_MS: '3000000',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    })
+    expect(shengsuanyun?.modelContextWindows?.['anthropic/claude-opus-4.7']).toBe(1000000)
+    expect(xuanshuapi?.apiKeyUrl).toBeUndefined()
+    expect(xuanshuapi?.promoText).toBeUndefined()
+    expect(xuanshuapi?.featured).toBeUndefined()
+    expect(xuanshuapi?.defaultEnv).toEqual({
+      CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-5',
+    })
+    expect(xuanshuapi?.modelContextWindows?.['claude-sonnet-5']).toBe(1000000)
+    expect(fennoai?.apiKeyUrl).toBeUndefined()
+    expect(fennoai?.promoText).toBeUndefined()
+    expect(fennoai?.featured).toBeUndefined()
+    expect(fennoai?.modelContextWindows?.['claude-sonnet-5']).toBe(1000000)
+    expect(fennoai?.modelContextWindows?.['claude-haiku-4-5']).toBe(200000)
+    expect(qiniuai?.apiKeyUrl).toBeUndefined()
+    expect(qiniuai?.promoText).toBeUndefined()
+    expect(qiniuai?.featured).toBeUndefined()
+    expect(qiniuai?.modelContextWindows?.['deepseek/deepseek-v4-flash']).toBe(1000000)
+    expect(qiniuai?.modelContextWindows?.['z-ai/glm-5.2']).toBe(1000000)
+    expect(qiniuai?.modelContextWindows?.['moonshotai/kimi-k3']).toBe(262144)
+    expect(atlascloud?.apiKeyUrl).toBe(
+      'https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=cc-haha',
+    )
+    expect(atlascloud?.featured).toBe(true)
+    expect(custom?.promoText).toBeUndefined()
+    expect(custom?.authStrategy).toBe('auth_token')
+    expect(custom?.defaultEnv).toBeUndefined()
+  })
+
+  test('GET and PUT /api/providers/settings read and write cc-haha settings.json', async () => {
+    const initial = {
+      env: {
+        ANTHROPIC_MODEL: 'glm-5.1',
+      },
+      model: 'glm-5.1',
+    }
+    await fs.mkdir(path.join(tmpDir, 'cc-haha'), { recursive: true })
+    await fs.writeFile(
+      path.join(tmpDir, 'cc-haha', 'settings.json'),
+      JSON.stringify(initial, null, 2),
+      'utf-8',
+    )
+
+    const getReq = makeRequest('GET', '/api/providers/settings')
+    const getRes = await handleProvidersApi(getReq.req, getReq.url, getReq.segments)
+    expect(getRes.status).toBe(200)
+    expect(await getRes.json()).toEqual(initial)
+
+    const updateBody = {
+      model: 'kimi-k2.6',
+      env: {
+        ANTHROPIC_MODEL: 'kimi-k2.6',
+      },
+    }
+    const putReq = makeRequest('PUT', '/api/providers/settings', updateBody)
+    const putRes = await handleProvidersApi(putReq.req, putReq.url, putReq.segments)
+    expect(putRes.status).toBe(200)
+
+    const updatedRaw = await fs.readFile(path.join(tmpDir, 'cc-haha', 'settings.json'), 'utf-8')
+    expect(JSON.parse(updatedRaw)).toEqual(updateBody)
+  })
+
+  test('retired presets keep the runtime config saved providers resolve from them', () => {
+    for (const id of ['shengsuanyun', 'jiekouai', 'xuanshuapi', 'fennoai', 'qiniuai']) {
+      const preset = PROVIDER_PRESETS.find((candidate) => candidate.id === id)
+
+      expect(preset?.deprecated).toBe(true)
+      // defaultEnv is never persisted per provider, so it can only come from here.
+      expect(preset?.defaultEnv).toBeDefined()
+      // Records saved before these fields existed fall back to the preset for them.
+      expect(preset?.authStrategy).toBe('auth_token')
+      expect(preset?.modelContextWindows).toBeDefined()
+    }
+  })
+
+  test('retired 接口AI preset keeps runtime metadata without the obsolete Sonnet sentinel', () => {
+    const jiekouai = PROVIDER_PRESETS.find((preset) => preset.id === 'jiekouai')
+
+    // The shared capability resolver now emits the provider model capabilities.
+    // Keeping the old `none` sentinel here would disable effort as well as thinking.
+    expect(jiekouai?.defaultEnv).toEqual({})
+    // Dropping this silently collapses the context window 1M -> 200k.
+    expect(jiekouai?.modelContextWindows?.['claude-sonnet-4-6']).toBe(1000000)
+    expect(jiekouai?.modelContextWindows?.['claude-opus-4-7']).toBe(1000000)
+  })
+
+  test('retired presets stop promoting themselves', () => {
+    const retired = PROVIDER_PRESETS.filter((preset) => preset.deprecated)
+    expect(retired.length).toBeGreaterThan(0)
+
+    for (const preset of retired) {
+      // The edit form renders apiKeyUrl/promoText from the resolved preset with no mode
+      // guard, so a retired preset must not keep advertising itself to existing users.
+      expect(preset.apiKeyUrl).toBeUndefined()
+      expect(preset.promoText).toBeUndefined()
+      expect(preset.featured).toBeUndefined()
+    }
+  })
+
+  test('removed TeamoRouter preset is absent from the server catalog', () => {
+    expect(PROVIDER_PRESETS.some((preset) => preset.id === 'teamorouter')).toBe(false)
+  })
+
+  test('provider presets carry docs-backed context windows for current coding models', () => {
+    const byId = new Map(PROVIDER_PRESETS.map((preset) => [preset.id, preset]))
+
+    for (const id of ['deepseek', 'zhipuglm', 'kimi', 'minimax']) {
+      const preset = byId.get(id)!
+      expect(preset.modelContextWindows?.[preset.defaultModels.main]).toBeGreaterThan(0)
+    }
+  })
+
+  /**
+   * OpenCode Go binds the wire format to the URL path and does no translation, so
+   * these three facts are what make the provider work at all: an OpenAI format on
+   * the record (otherwise the CLI bypasses the proxy and the per-model routing
+   * never runs), the rules that pick the endpoint per model, and the client
+   * identity headers the gateway refuses to serve without.
+   */
+  describe('OpenCode Go preset', () => {
+    const opencodeGo = PROVIDER_PRESETS.find((preset) => preset.id === 'opencode-go')!
+
+    test('links API key signup to the referral page with concise setup guidance', () => {
+      expect(opencodeGo.apiKeyUrl).toBe('https://opencode.ai/go?ref=3RK0WVVCGD')
+      expect(opencodeGo.promoText).toBe('订阅后填入 API Key，即可获取并选择模型。')
+    })
+
+    test('is selectable and declares an OpenAI format so requests reach the proxy', () => {
+      expect(opencodeGo).toBeDefined()
+      expect(opencodeGo.deprecated).toBeUndefined()
+      expect(opencodeGo.needsApiKey).toBe(true)
+      expect(opencodeGo.baseUrl).toBe('https://opencode.ai/zen/go/v1')
+      expect(providerNeedsProxy(opencodeGo.apiFormat, undefined)).toBe(true)
+      // Every model on this gateway that is not reached through the paths below
+      // arrives over Bearer, and the Messages path alone reads x-api-key.
+      expect(opencodeGo.authStrategy).toBe('api_key')
+    })
+
+    test('routes only the families that need a non-chat endpoint', () => {
+      expect(opencodeGo.modelApiFormats).toEqual([
+        { prefixes: ['grok-', 'gpt-', 'muse-spark-'], apiFormat: 'openai_responses' },
+        { prefixes: ['minimax-', 'qwen', 'union-alpha'], apiFormat: 'anthropic' },
+        // OpenCode Go serves Gemini only over Google generateContent, outside /zen/go/v1.
+        { prefixes: ['gemini-'], apiFormat: 'gemini', baseUrl: '/inference/go/google/v1beta' },
+      ])
+      // Everything else must fall through to the provider format rather than being
+      // pinned by a rule, so the default only advertises what was verified.
+      for (const model of ['glm-5.3', 'kimi-k3', 'deepseek-v4-pro', 'longcat-2.0']) {
+        expect(resolveModelApiFormat(opencodeGo.modelApiFormats, model), model).toBeUndefined()
+      }
+    })
+
+    test('sends the session id the gateway requires plus a client-identifying user agent', () => {
+      expect(opencodeGo.upstreamHeaders).toEqual({
+        'User-Agent': 'cc-haha/$VERSION',
+        'x-opencode-session': '$SESSION_ID',
+      })
+      const resolved = resolveUpstreamHeaders(opencodeGo.upstreamHeaders, { sessionId: 's-1' })
+      expect(resolved['x-opencode-session']).toBe('s-1')
+      expect(resolved['User-Agent']).toMatch(/^cc-haha\//)
+    })
+
+    test('publishes a context window for every model it offers as a default', () => {
+      for (const model of Object.values(opencodeGo.defaultModels)) {
+        expect(opencodeGo.modelContextWindows?.[model], model).toBeGreaterThan(0)
+      }
+    })
+
+    test('stays ordered before the local endpoints so the catalog layout is stable', () => {
+      const ids = PROVIDER_PRESETS.map((preset) => preset.id)
+      expect(ids.indexOf('opencode-go')).toBeGreaterThan(-1)
+      expect(ids.indexOf('opencode-go')).toBeLessThan(ids.indexOf('lmstudio'))
+    })
+  })
+
+  /**
+   * OpenRouter is a pure aggregation gateway: it speaks Anthropic Messages natively
+   * at its own root, so the preset must stay a direct connection (no local proxy,
+   * no per-model routing, no injected env) and let the user pick any namespaced
+   * model id from the live catalog.
+   */
+  describe('OpenRouter preset', () => {
+    const openrouter = PROVIDER_PRESETS.find((preset) => preset.id === 'openrouter')!
+
+    test('publishes a direct Anthropic-native preset with API key signup', () => {
+      expect(openrouter).toBeDefined()
+      expect(openrouter.name).toBe('OpenRouter')
+      expect(openrouter.baseUrl).toBe('https://openrouter.ai/api')
+      expect(openrouter.apiFormat).toBe('anthropic')
+      expect(openrouter.authStrategy).toBe('auth_token')
+      expect(openrouter.needsApiKey).toBe(true)
+      expect(openrouter.websiteUrl).toBe('https://openrouter.ai')
+      expect(openrouter.apiKeyUrl).toBe('https://openrouter.ai/settings/keys')
+      expect(openrouter.isNew).toBe(true)
+      expect(openrouter.deprecated).toBeUndefined()
+      // Claude Code appends /v1/messages itself; an /api/v1 base URL would 404.
+      expect(openrouter.baseUrl).not.toMatch(/\/v1$/)
+    })
+
+    test('stays out of the sponsor row and ships no proxy or routing rules', () => {
+      expect(openrouter.featured).toBeUndefined()
+      expect(openrouter.promoText).toBeUndefined()
+      expect(openrouter.modelApiFormats).toBeUndefined()
+      expect(openrouter.upstreamHeaders).toBeUndefined()
+      // An empty defaultEnv is deliberate: a preset-wide auto-compact window or
+      // subagent pin would be wrong for a catalog spanning many vendors (#1162).
+      expect(openrouter.defaultEnv).toEqual({})
+      expect(providerNeedsProxy(openrouter.apiFormat, undefined)).toBe(false)
+    })
+
+    test('connects straight to OpenRouter with the token and a cleared x-api-key', () => {
+      const env = buildProviderManagedEnv({
+        id: 'openrouter-test', presetId: openrouter.id, name: openrouter.name,
+        baseUrl: openrouter.baseUrl, apiFormat: openrouter.apiFormat,
+        authStrategy: openrouter.authStrategy, apiKey: 'sk-or-offline-fixture',
+        models: openrouter.defaultModels,
+      })
+      expect(env.ANTHROPIC_BASE_URL).toBe('https://openrouter.ai/api')
+      // anthropic-format presets that do not opt out of nested tool-result media
+      // bypass the loopback proxy entirely.
+      expect(env.ANTHROPIC_BASE_URL).not.toContain('127.0.0.1')
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-or-offline-fixture')
+      expect(env.ANTHROPIC_API_KEY).toBe('')
+      expect(env.ANTHROPIC_MODEL).toBe('anthropic/claude-sonnet-5.5')
+      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-5.5')
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-sonnet-5.5')
+      expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('anthropic/claude-haiku-5.5')
+      expect(JSON.parse(env.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS!)).toMatchObject({
+        'anthropic/claude-sonnet-5.5': 1000000,
+        'anthropic/claude-opus-5.5': 1000000,
+        'anthropic/claude-haiku-5.5': 1000000,
+      })
+      // A preset-wide timeout or compact window here would leak into every other
+      // provider through the managed-env erase list.
+      expect(env.API_TIMEOUT_MS).toBeUndefined()
+      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined()
+    })
+
+    test('publishes a context window for every model it offers as a default', () => {
+      for (const model of Object.values(openrouter.defaultModels)) {
+        // Ids carry the author/ namespace, so the built-in table alone cannot
+        // resolve them; the preset must carry the window itself.
+        expect(model).toContain('/')
+        expect(openrouter.modelContextWindows?.[model], model).toBeGreaterThan(0)
+      }
+    })
+
+    test('stays ordered before the local endpoints so the catalog layout is stable', () => {
+      const ids = PROVIDER_PRESETS.map((preset) => preset.id)
+      expect(ids.indexOf('openrouter')).toBeGreaterThan(-1)
+      expect(ids.indexOf('openrouter')).toBeLessThan(ids.indexOf('lmstudio'))
+      expect(PROVIDER_PRESETS.at(-3)?.id).toBe('lmstudio')
+      expect(PROVIDER_PRESETS.at(-2)?.id).toBe('ollama')
+      expect(PROVIDER_PRESETS.at(-1)?.id).toBe('custom')
+    })
+  })
+
+  test('rejects an upstream header name that would break the upstream request', () => {
+    const base = {
+      id: 'probe', name: 'Probe', baseUrl: 'https://probe.test', apiFormat: 'anthropic',
+      defaultModels: { main: 'm', haiku: 'm', sonnet: 'm', opus: 'm' },
+      needsApiKey: true, websiteUrl: '',
+    }
+    expect(ProviderPresetSchema.safeParse({ ...base, upstreamHeaders: { 'x-ok': 'v' } }).success).toBe(true)
+    // A malformed name only surfaces as a fetch TypeError on every request at
+    // runtime, so the bundle must refuse to load it instead.
+    for (const name of ['x-bad\nx-leak: 1', 'has space', 'colon:yes', '']) {
+      expect(
+        ProviderPresetSchema.safeParse({ ...base, upstreamHeaders: { [name]: 'v' } }).success,
+        JSON.stringify(name),
+      ).toBe(false)
+    }
+  })
+})

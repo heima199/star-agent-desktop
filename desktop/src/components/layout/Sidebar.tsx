@@ -1,0 +1,2229 @@
+import { SessionScheduleMark } from '@/components/tasks/SessionScheduleMark'
+import { forwardRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { Bell, Check, ChevronRight, Clock, Ellipsis, Folder, FolderOpen, FolderPlus, GitBranch, ListChecks, Pin, PinOff, RefreshCw, RotateCcw, Search, SquarePen, X } from 'lucide-react'
+import { StarAccountDock, StarCheckinBanner, useStarCheckinBannerVisible } from '../star/StarAccountDock'
+import { StarModeSwitch } from '../star/StarModeSwitch'
+import { StarSidebarNav } from '../star/StarSidebarNav'
+import { releaseWorkspaceSession } from '../../lib/workspace/releaseSession'
+import { useSessionStore } from '../../stores/sessionStore'
+import { useUIStore } from '../../stores/uiStore'
+import { useTranslation, type TranslationKey } from '../../i18n'
+import { useStarBrand } from '../../stores/starBrandStore'
+import { BrandSeal } from '@/components/composite/BrandSeal'
+import { Button } from '@/components/ui/Button'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { EmptyState } from '@/components/ui/EmptyState'
+import { IconButton } from '@/components/ui/IconButton'
+import { SessionRunningMark } from './SessionRunningMark'
+import { useDismissable } from '@/hooks/useDismissable'
+import { GlobalSearchModal } from '../search/GlobalSearchModal'
+import { FindInPageModal } from '../search/FindInPageModal'
+import { ProjectEditorModal, type ProjectEditorSubmission } from './ProjectEditorModal'
+import { SidebarTaskList } from './SidebarTaskList'
+import { SIDEBAR_PROJECT_SESSION_PREVIEW_LIMIT } from '../../lib/sessionListPagination'
+import { ProjectSessionList, notifyProjectHistoryAtSidebarBottom } from '@/components/layout/ProjectSessionList'
+import {
+  buildSidebarTaskGroups,
+  getSessionProjectKey,
+  getSessionWorkspaceLabel,
+  isWorktreeSession,
+  normalizePathForCompare,
+  projectTitle,
+} from './sidebarTaskGroups'
+import { sessionsApi } from '../../api/sessions'
+import type { SessionListItem } from '../../types/session'
+import { useTabStore } from '../../stores/tabStore'
+import { useChatStore } from '../../stores/chatStore'
+import { useShallow } from 'zustand/react/shallow'
+import { useOpenTargetStore } from '../../stores/openTargetStore'
+import {
+  resetProjectDisplayName,
+  resolveProjectDisplayName,
+  setProjectDisplayName,
+  useProjectDisplayNameRevision,
+} from '../../stores/projectDisplayNameStore'
+import {
+  desktopUiPreferencesApi,
+  type DesktopUiPreferencesResponse,
+  type SidebarProjectPreferences,
+} from '../../api/desktopUiPreferences'
+import { getDesktopHost } from '../../lib/desktopHost'
+import { hasRunningBackgroundTasks } from '../../lib/backgroundTasks'
+import { collectAttentionIds } from '../../lib/sessionAttention'
+import { getSessionWorkspaceState, getSessionSeedWorkDir } from '../../lib/sessionWorkspace'
+import { detectPlatform } from '../../lib/workspace/shortcuts'
+import { SessionAttentionMark } from './SessionAttentionMark'
+import {
+  buildSidebarProjectPreferences,
+  hasSidebarProjectPreferences,
+  normalizeSidebarProjectPreferences,
+  readCachedSidebarProjectPreferences,
+  readStoredProjectCollapsed,
+  readStoredProjectHidden,
+  readStoredProjectOrder,
+  readStoredProjectOrganization,
+  readStoredProjectPins,
+  readStoredProjectSortBy,
+  writeCachedSidebarProjectPreferences,
+  writeStoredProjectCollapsed,
+  type SidebarProjectOrganization,
+  type SidebarProjectSortBy,
+} from './sidebarProjectPreferenceStorage'
+import { useSessionListAutoRefresh } from '../../hooks/useSessionListAutoRefresh'
+import { formatRelativeTime } from '../../lib/formatRelativeTime'
+
+const desktopHost = getDesktopHost()
+const isDesktopRuntime = desktopHost.isDesktop
+const isWindows = typeof navigator !== 'undefined' && /Win/.test(navigator.platform)
+const MOD_KEY = detectPlatform() === 'mac' ? '⌘' : 'Ctrl+'
+/** 「素」 kbd: mono 11, 18px tall, `--radius-xs`, hairline, paper fill, tertiary ink. */
+const KBD_CLASS = 'pointer-events-none inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-[var(--radius-xs)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-1 font-mono text-[11px] leading-none text-[var(--color-text-tertiary)]'
+/** The selected row is a white card lifted off the sidebar ground. */
+const SIDEBAR_ROW_RAISED = 'bg-[var(--color-sidebar-item-active)] text-[var(--color-text-primary)] shadow-[0_0_0_1px_var(--color-border),var(--shadow-raised)]'
+const ICON_STROKE = 1.75
+const PROJECT_GROUP_VISIBLE_COUNT = SIDEBAR_PROJECT_SESSION_PREVIEW_LIMIT
+
+type SidebarHeaderMenuType = 'main' | 'organize' | 'sort' | 'create'
+
+type ProjectGroup = {
+  key: string
+  title: string
+  subtitle: string | null
+  workDir: string | undefined
+  sessions: SessionListItem[]
+}
+
+type ProjectEditorState =
+  | {
+    mode: 'create'
+    sourceFolder: string
+    logicalRoot: string
+    suggestedName: string
+  }
+  | {
+    mode: 'edit'
+    logicalRoot: string
+  }
+
+type SidebarProps = {
+  desktopUiPreferencesRequest?: Promise<DesktopUiPreferencesResponse> | null
+  onDesktopUiPreferencesConsumed?: (request: Promise<DesktopUiPreferencesResponse>) => void
+}
+
+type SessionScrollAnchor = {
+  sessionId: string
+  topOffset: number
+}
+
+function openInFileManagerKey(platform: string | null): TranslationKey {
+  switch (platform) {
+    case 'darwin':
+      return 'sidebar.openInFileManager.darwin'
+    case 'win32':
+      return 'sidebar.openInFileManager.win32'
+    case 'linux':
+      return 'sidebar.openInFileManager.linux'
+    default:
+      return 'sidebar.openInFileManager.default'
+  }
+}
+
+export function Sidebar({
+  desktopUiPreferencesRequest,
+  onDesktopUiPreferencesConsumed,
+}: SidebarProps) {
+  const t = useTranslation()
+  // The wordmark is the product name the STAR console sets (its 网站名称).
+  const brand = useStarBrand()
+  const sessions = useSessionStore((s) => s.sessions)
+  const projectHistory = useSessionStore((s) => s.projectHistory)
+  const projectSessionTotals = useSessionStore((s) => s.projectSessionTotals)
+  const isLoading = useSessionStore((s) => s.isLoading)
+  const indexStatus = useSessionStore((s) => s.indexStatus)
+  const indexBuilding = indexStatus?.mode === 'on' && indexStatus.state === 'building'
+  const fetchSessions = useSessionStore((s) => s.fetchSessions)
+  const deleteSession = useSessionStore((s) => s.deleteSession)
+  const deleteSessions = useSessionStore((s) => s.deleteSessions)
+  const isBatchMode = useSessionStore((s) => s.isBatchMode)
+  const selectedSessionIds = useSessionStore((s) => s.selectedSessionIds)
+  const enterBatchMode = useSessionStore((s) => s.enterBatchMode)
+  const exitBatchMode = useSessionStore((s) => s.exitBatchMode)
+  const toggleSessionSelected = useSessionStore((s) => s.toggleSessionSelected)
+  const selectSessions = useSessionStore((s) => s.selectSessions)
+  const deselectSessions = useSessionStore((s) => s.deselectSessions)
+  const renameSession = useSessionStore((s) => s.renameSession)
+  const addToast = useUIStore((s) => s.addToast)
+  const sidebarOpen = useUIStore((s) => s.sidebarOpen)
+  const toggleSidebar = useUIStore((s) => s.toggleSidebar)
+  const activeModal = useUIStore((s) => s.activeModal)
+  const openModal = useUIStore((s) => s.openModal)
+  const closeModal = useUIStore((s) => s.closeModal)
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const tabs = useTabStore((s) => s.tabs)
+  // Only which sessions are running or waiting, never the session map itself:
+  // that changes on every streamed token of every session, and re-rendering the
+  // whole project tree for each one kept the window busy while long runs
+  // streamed (#1480). `useShallow` keeps an unchanged id list from re-rendering.
+  const runningChatSessionIds = useChatStore(useShallow((s) =>
+    Object.keys(s.sessions).filter((sessionId) => {
+      const sessionState = s.sessions[sessionId]!
+      return sessionState.chatState !== 'idle' || hasRunningBackgroundTasks(sessionState.backgroundAgentTasks)
+    })))
+  const attentionSessionIdList = useChatStore(useShallow((s) => collectAttentionIds(s.sessions)))
+  const closeTab = useTabStore((s) => s.closeTab)
+  const disconnectSession = useChatStore((s) => s.disconnectSession)
+  const fileManagerPlatform = useOpenTargetStore((s) => (
+    s.platform ?? s.targets.find((target) => target.kind === 'file_manager')?.platform ?? null
+  ))
+  const ensureOpenTargets = useOpenTargetStore((s) => s.ensureTargets)
+  const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  const [projectContextMenu, setProjectContextMenu] = useState<{ key: string; x: number; y: number } | null>(null)
+  const [projectHeaderMenu, setProjectHeaderMenu] = useState<{ type: SidebarHeaderMenuType; x: number; y: number } | null>(null)
+  const [projectHeaderSubmenu, setProjectHeaderSubmenu] = useState<{ type: 'organize' | 'sort'; x: number; y: number } | null>(null)
+  const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null)
+  const [pendingBatchDeleteSessionIds, setPendingBatchDeleteSessionIds] = useState<string[] | null>(null)
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [lastSelectedSessionId, setLastSelectedSessionId] = useState<string | null>(null)
+  const [expandedProjectKeys, setExpandedProjectKeys] = useState<Set<string>>(new Set())
+  const [collapsedProjectKeys, setCollapsedProjectKeys] = useState<Set<string>>(() => readStoredProjectCollapsed())
+  const [projectOrder, setProjectOrder] = useState<string[]>(() => readStoredProjectOrder())
+  const [pinnedProjectKeys, setPinnedProjectKeys] = useState<Set<string>>(() => readStoredProjectPins())
+  const [hiddenProjectKeys, setHiddenProjectKeys] = useState<Set<string>>(() => readStoredProjectHidden())
+  const [projectOrganization, setProjectOrganizationState] = useState<SidebarProjectOrganization>(() => readStoredProjectOrganization())
+  const [projectSortBy, setProjectSortByState] = useState<SidebarProjectSortBy>(() => readStoredProjectSortBy())
+  const [draggingProjectKey, setDraggingProjectKey] = useState<string | null>(null)
+  const [projectDropTarget, setProjectDropTarget] = useState<{ key: string; position: 'before' | 'after' } | null>(null)
+  const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null)
+  const [projectEditorError, setProjectEditorError] = useState<string | null>(null)
+  const [projectEditorLoading, setProjectEditorLoading] = useState(false)
+  const projectDisplayNameRevision = useProjectDisplayNameRevision()
+  const suppressProjectClickRef = useRef<string | null>(null)
+  const sessionContextMenuRef = useRef<HTMLDivElement>(null)
+  const projectContextMenuRef = useRef<HTMLDivElement>(null)
+  const projectHeaderMenuRef = useRef<HTMLDivElement>(null)
+  const projectHeaderSubmenuRef = useRef<HTMLDivElement>(null)
+  const projectHeaderActionsRef = useRef<HTMLDivElement>(null)
+  const sidebarPreferenceRevisionRef = useRef(0)
+  const projectRootLookupRevisionRef = useRef(0)
+  const projectRootLookupRef = useRef<{
+    sourceFolder: string
+    request: ReturnType<typeof sessionsApi.getRepositoryContext>
+  } | null>(null)
+  const sessionScrollAreaRef = useRef<HTMLDivElement>(null)
+  const pendingSessionScrollAnchorRef = useRef<SessionScrollAnchor | null>(null)
+  const refreshSessionsNow = useSessionListAutoRefresh(fetchSessions, indexBuilding)
+
+  useEffect(() => useSessionStore.subscribe((nextState, previousState) => {
+    if (nextState.sessions === previousState.sessions) return
+
+    pendingSessionScrollAnchorRef.current = null
+    if (
+      nextState.indexStatus === previousState.indexStatus
+      || nextState.indexStatus?.mode !== 'on'
+      || nextState.indexStatus.state !== 'building'
+    ) {
+      return
+    }
+
+    const scrollArea = sessionScrollAreaRef.current
+    if (!scrollArea || scrollArea.scrollTop <= 0) return
+    pendingSessionScrollAnchorRef.current = readFirstVisibleSessionAnchor(scrollArea)
+  }), [])
+
+  useLayoutEffect(() => {
+    const anchor = pendingSessionScrollAnchorRef.current
+    pendingSessionScrollAnchorRef.current = null
+    if (!anchor) return
+
+    const scrollArea = sessionScrollAreaRef.current
+    if (!scrollArea || scrollArea.scrollTop <= 0) return
+    const row = findSessionRow(scrollArea, anchor.sessionId)
+    if (!row) return
+
+    const topOffset = row.getBoundingClientRect().top - scrollArea.getBoundingClientRect().top
+    const delta = topOffset - anchor.topOffset
+    if (Number.isFinite(delta) && delta !== 0) {
+      scrollArea.scrollTop += delta
+    }
+  }, [sessions])
+
+  useEffect(() => {
+    if (!contextMenu) return
+    if (!sidebarOpen) setContextMenu(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarOpen])
+
+  useEffect(() => {
+    if (!projectContextMenu) return
+    void ensureOpenTargets()
+  }, [ensureOpenTargets, projectContextMenu])
+
+  const closeAllSidebarMenus = useCallback(() => {
+    setContextMenu(null)
+    setProjectContextMenu(null)
+    setProjectHeaderMenu(null)
+    setProjectHeaderSubmenu(null)
+  }, [])
+
+  // Each menu already stops propagation on its own container, so listing them
+  // as "inside" reproduces the previous behavior. `triggerRef` covers the two
+  // project-header buttons: without it their own click would reopen the menu
+  // this hook just closed.
+  useDismissable({
+    open: contextMenu !== null || projectContextMenu !== null || projectHeaderMenu !== null || projectHeaderSubmenu !== null,
+    refs: [sessionContextMenuRef, projectContextMenuRef, projectHeaderMenuRef, projectHeaderSubmenuRef],
+    triggerRef: projectHeaderActionsRef,
+    onDismiss: closeAllSidebarMenus,
+  })
+
+  // Title filtering moved into the global search modal (Cmd+K); the list shows all sessions.
+  const filteredSessions = sessions
+
+  const projectGroups = useMemo(
+    () => groupByProject(filteredSessions, projectSortBy, resolveProjectDisplayName),
+    [filteredSessions, projectDisplayNameRevision, projectSortBy],
+  )
+  const orderedProjectGroups = useMemo(
+    () => applyProjectOrder(projectGroups, projectOrder, pinnedProjectKeys, projectOrganization, projectSortBy),
+    [projectGroups, projectOrder, pinnedProjectKeys, projectOrganization, projectSortBy],
+  )
+  const visibleProjectGroups = useMemo(() => {
+    if (hiddenProjectKeys.size === 0) return orderedProjectGroups
+    return orderedProjectGroups.filter((project) => (
+      !hiddenProjectKeys.has(project.key)
+    ))
+  }, [hiddenProjectKeys, orderedProjectGroups])
+  /**
+   * 任务视图和「整理侧边栏 → 按时间顺序」是同一个状态：铃铛亮 ⟺ 组织方式是
+   * `time`。这个选项本来就承诺按时间排，此前却仍旧按工作区分组，两个入口指向
+   * 一份持久化偏好比再引入一个平行开关更省事，也不会有两处互相说不通的状态。
+   */
+  const isTaskView = projectOrganization === 'time'
+  const showInitialLoading = isLoading && sessions.length === 0
+  const showRefreshLoading = showInitialLoading
+  // Every index state is an implementation detail of how the list is loaded,
+  // not something the user acts on. Even `degraded` only changes the source
+  // the list is read from — the rows, their order, and search results stay
+  // identical — so it stays silent in both the visible sidebar and the live
+  // region instead of taking a row to explain itself.
+  const filteredSessionIds = useMemo(() => filteredSessions.map((session) => session.id), [filteredSessions])
+  const selectedCount = selectedSessionIds.size
+  const sessionsById = useMemo(
+    () => new Map(sessions.map((session) => [session.id, session])),
+    [sessions],
+  )
+  const runningSessionIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const tab of tabs) {
+      if (tab.type === 'session' && tab.status === 'running') ids.add(tab.sessionId)
+    }
+    for (const sessionId of runningChatSessionIds) ids.add(sessionId)
+    return ids
+  }, [runningChatSessionIds, tabs])
+  // 停在权限请求上的会话在 `runningSessionIds` 里也算「没结束」，但它不是在
+  // 干活而是在等人。两个视图都要把这两种状态分开显示。
+  // 判定看挂起的请求记录而不是 `chatState`：`status` / `session_state` 消息会在
+  // 卡片还开着的时候把 chatState 改掉，按它判定会在有卡的会话上熄灯。tab 栏与
+  // 这里共用同一个 `sessionNeedsAttention`，不要各写各的。
+  const attentionSessionIds = useMemo(() => new Set(attentionSessionIdList), [attentionSessionIdList])
+  // Row times ("10m ago") and the task view's day buckets read the clock. They
+  // used to refresh as a side effect of re-rendering on every streamed token;
+  // a minute tick keeps them current without that.
+  const [clockMinute, setClockMinute] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockMinute(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const taskGroups = useMemo(() => {
+    if (!isTaskView) return []
+    // 隐藏的项目在任务视图里也要隐藏，否则两个视图对「有哪些会话」说法不一致。
+    const visibleSessions = hiddenProjectKeys.size === 0
+      ? filteredSessions
+      : filteredSessions.filter((session) => !hiddenProjectKeys.has(getSessionProjectKey(session)))
+    // `clockMinute` only schedules the regrouping; the buckets read the clock now.
+    void clockMinute
+    return buildSidebarTaskGroups(visibleSessions, runningSessionIds, Date.now())
+  }, [clockMinute, filteredSessions, hiddenProjectKeys, isTaskView, runningSessionIds])
+  const workspaceLabelFor = useCallback(
+    (session: SessionListItem) => getSessionWorkspaceLabel(session, resolveProjectDisplayName),
+    // 改过的项目名要跟着变；与 projectGroups 同一个 revision 依赖。
+    [projectDisplayNameRevision],
+  )
+  const pendingBatchDeleteSessions = useMemo(
+    () => (pendingBatchDeleteSessionIds ?? [])
+      .map((sessionId) => sessionsById.get(sessionId))
+      .filter((session): session is SessionListItem => Boolean(session)),
+    [pendingBatchDeleteSessionIds, sessionsById],
+  )
+  const expanded = sidebarOpen
+  // The check-in banner stacks on the dock, so the list ends higher while it shows.
+  const checkinBannerShown = useStarCheckinBannerVisible() && expanded
+  // Only the packaged app has a version worth showing; the browser host
+  // answers with a placeholder.
+  const [appVersion, setAppVersion] = useState<string | null>(null)
+  useEffect(() => {
+    if (!isDesktopRuntime) return
+    let cancelled = false
+    Promise.resolve()
+      .then(() => desktopHost.app.getVersion())
+      .then((version) => {
+        if (!cancelled && typeof version === 'string' && version.trim()) setAppVersion(version.trim())
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const applySidebarProjectPreferences = useCallback((preferences: SidebarProjectPreferences) => {
+    setProjectOrder(preferences.projectOrder)
+    setPinnedProjectKeys(new Set(preferences.pinnedProjects))
+    setHiddenProjectKeys(new Set(preferences.hiddenProjects))
+    setProjectOrganizationState(preferences.projectOrganization)
+    setProjectSortByState(preferences.projectSortBy)
+  }, [])
+
+  const persistSidebarProjectPreferences = useCallback((preferences: SidebarProjectPreferences) => {
+    const normalized = normalizeSidebarProjectPreferences(preferences)
+    sidebarPreferenceRevisionRef.current += 1
+    writeCachedSidebarProjectPreferences(normalized)
+    if (desktopUiPreferencesRequest) {
+      const request = desktopUiPreferencesRequest
+      queueMicrotask(() => onDesktopUiPreferencesConsumed?.(request))
+    }
+    void desktopUiPreferencesApi.updateSidebarPreferences(normalized).catch(() => undefined)
+  }, [desktopUiPreferencesRequest, onDesktopUiPreferencesConsumed])
+
+  const restoreHiddenProjectForWorkDir = useCallback((workDir: string | null | undefined) => {
+    if (!workDir) return
+    setHiddenProjectKeys((current) => {
+      const next = new Set([...current].filter((projectKey) => !projectPathMatches(projectKey, workDir)))
+      if (next.size === current.size) return current
+      persistSidebarProjectPreferences(buildSidebarProjectPreferences(
+        projectOrder,
+        pinnedProjectKeys,
+        next,
+        projectOrganization,
+        projectSortBy,
+      ))
+      return next
+    })
+  }, [persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectOrganization, projectSortBy])
+
+  useEffect(() => {
+    if (!desktopUiPreferencesRequest) return
+
+    let cancelled = false
+    const request = desktopUiPreferencesRequest
+    const startRevision = sidebarPreferenceRevisionRef.current
+
+    void request
+      .then((response) => {
+        if (cancelled) return
+        if (startRevision !== sidebarPreferenceRevisionRef.current) return
+
+        const localPreferences = readCachedSidebarProjectPreferences()
+        const serverPreferences = normalizeSidebarProjectPreferences(response.preferences.sidebar)
+        const effectivePreferences = response.exists ? serverPreferences : localPreferences
+
+        applySidebarProjectPreferences(effectivePreferences)
+        writeCachedSidebarProjectPreferences(effectivePreferences)
+
+        if (!response.exists && hasSidebarProjectPreferences(localPreferences)) {
+          void desktopUiPreferencesApi.updateSidebarPreferences(localPreferences).catch(() => undefined)
+        }
+      })
+      .catch(() => {
+        // The sidebar remains usable with the local cache if the server is still booting.
+      })
+      .finally(() => {
+        if (!cancelled) onDesktopUiPreferencesConsumed?.(request)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [applySidebarProjectPreferences, desktopUiPreferencesRequest, onDesktopUiPreferencesConsumed])
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, id: string) => {
+    e.preventDefault()
+    if (isBatchMode) return
+    setContextMenu({ id, x: e.clientX, y: e.clientY })
+  }, [isBatchMode])
+
+  const handleProjectDragStart = useCallback((event: React.DragEvent, projectKey: string) => {
+    if (isBatchMode) {
+      event.preventDefault()
+      return
+    }
+    suppressProjectClickRef.current = projectKey
+    setDraggingProjectKey(projectKey)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', projectKey)
+  }, [isBatchMode])
+
+  const handleProjectDragOver = useCallback((event: React.DragEvent<HTMLElement>, projectKey: string) => {
+    const sourceProjectKey = draggingProjectKey || event.dataTransfer.getData('text/plain')
+    if (!sourceProjectKey || sourceProjectKey === projectKey) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    const position = getProjectDropPosition(event)
+    setProjectDropTarget((current) => (
+      current?.key === projectKey && current.position === position
+        ? current
+        : { key: projectKey, position }
+    ))
+  }, [draggingProjectKey])
+
+  const clearProjectDragState = useCallback(() => {
+    setDraggingProjectKey(null)
+    setProjectDropTarget(null)
+    window.setTimeout(() => {
+      suppressProjectClickRef.current = null
+    }, 0)
+  }, [])
+
+  const handleProjectDrop = useCallback((event: React.DragEvent<HTMLElement>, targetProjectKey: string) => {
+    event.preventDefault()
+    const sourceProjectKey = draggingProjectKey || event.dataTransfer.getData('text/plain')
+    const dropPosition = projectDropTarget?.key === targetProjectKey
+      ? projectDropTarget.position
+      : getProjectDropPosition(event)
+    if (!sourceProjectKey || sourceProjectKey === targetProjectKey) {
+      clearProjectDragState()
+      return
+    }
+
+    const nextOrder = moveProjectKey(
+      orderedProjectGroups.map((project) => project.key),
+      sourceProjectKey,
+      targetProjectKey,
+      dropPosition,
+    )
+    setProjectOrder(nextOrder)
+    persistSidebarProjectPreferences(buildSidebarProjectPreferences(nextOrder, pinnedProjectKeys, hiddenProjectKeys, projectOrganization, projectSortBy))
+    clearProjectDragState()
+  }, [clearProjectDragState, draggingProjectKey, hiddenProjectKeys, orderedProjectGroups, persistSidebarProjectPreferences, pinnedProjectKeys, projectDropTarget, projectOrganization, projectSortBy])
+
+  const openDraftForWorkDir = useCallback((workDir?: string) => {
+    // Do not allocate a standard server session before the user can choose
+    // the immutable agent profile in the new-chat composer.
+    useUIStore.getState().startNewSessionDraft(workDir)
+    const draft = useUIStore.getState().newSessionDraft
+    restoreHiddenProjectForWorkDir(draft?.workDir ?? workDir)
+    // An empty draft has just moved to the requested project. Only one holding
+    // unsent content stays where it was, and that is worth saying.
+    if (draft && workDir !== undefined && draft.workDir !== workDir) {
+      addToast({ type: 'info', message: t('sidebar.draftResumed') })
+    }
+    useSessionStore.getState().setActiveSession(null)
+    useTabStore.getState().setActiveTab(null)
+  }, [addToast, restoreHiddenProjectForWorkDir, t])
+
+  // "New session" and its Cmd+N shortcut: a session in the project of the
+  // chat on screen, with profile selection before its first send.
+  const createSessionInCurrentProject = useCallback(() => {
+    const currentTabId = useTabStore.getState().activeTabId
+    const currentSession = currentTabId
+      ? useSessionStore.getState().sessions.find((s) => s.id === currentTabId)
+      : null
+    const workDir = getSessionSeedWorkDir(currentSession)
+      ?? (!currentTabId ? useUIStore.getState().newSessionDraft?.workDir : undefined)
+    void openDraftForWorkDir(workDir)
+  }, [openDraftForWorkDir])
+  const newSessionRequest = useUIStore((s) => s.newSessionRequest)
+  const handledNewSessionRequest = useRef(newSessionRequest)
+  useEffect(() => {
+    if (newSessionRequest === handledNewSessionRequest.current) return
+    handledNewSessionRequest.current = newSessionRequest
+    createSessionInCurrentProject()
+  }, [createSessionInCurrentProject, newSessionRequest])
+
+  const openProjectHeaderMenu = useCallback((event: React.MouseEvent, type: SidebarHeaderMenuType) => {
+    event.stopPropagation()
+    const rect = event.currentTarget.getBoundingClientRect()
+    const width = type === 'create' ? 250 : 270
+    setProjectContextMenu(null)
+    setContextMenu(null)
+    setProjectHeaderSubmenu(null)
+    setProjectHeaderMenu({
+      type,
+      x: Math.max(10, Math.min(rect.right - width, window.innerWidth - width - 10)),
+      y: rect.bottom + 8,
+    })
+  }, [])
+
+  const openProjectHeaderSubmenu = useCallback((event: React.MouseEvent, type: 'organize' | 'sort') => {
+    event.stopPropagation()
+    const rect = event.currentTarget.getBoundingClientRect()
+    const width = type === 'sort' ? 230 : 260
+    setProjectHeaderSubmenu({
+      type,
+      x: Math.max(10, Math.min(rect.right + 8, window.innerWidth - width - 10)),
+      y: Math.max(10, Math.min(rect.top - 8, window.innerHeight - 170)),
+    })
+  }, [])
+
+  const updateProjectOrganization = useCallback((organization: SidebarProjectOrganization) => {
+    setProjectHeaderMenu(null)
+    setProjectHeaderSubmenu(null)
+    setProjectOrganizationState(organization)
+    const nextOrder = organization === 'project' || organization === 'time' ? [] : projectOrder
+    if (nextOrder !== projectOrder) setProjectOrder(nextOrder)
+    persistSidebarProjectPreferences(buildSidebarProjectPreferences(
+      nextOrder,
+      pinnedProjectKeys,
+      hiddenProjectKeys,
+      organization,
+      projectSortBy,
+    ))
+  }, [hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectSortBy])
+
+  /**
+   * 关掉任务视图要回到「上一次用的分组方式」，而不是硬回默认值：按项目排过的
+   * 人切一次任务视图再切回来，不该被悄悄改成近期项目。
+   */
+  const lastGroupedOrganizationRef = useRef<SidebarProjectOrganization>('recentProject')
+  useEffect(() => {
+    if (projectOrganization !== 'time') lastGroupedOrganizationRef.current = projectOrganization
+  }, [projectOrganization])
+
+  const toggleTaskView = useCallback(() => {
+    updateProjectOrganization(isTaskView ? lastGroupedOrganizationRef.current : 'time')
+  }, [isTaskView, updateProjectOrganization])
+
+  const updateProjectSortBy = useCallback((sortBy: SidebarProjectSortBy) => {
+    setProjectHeaderMenu(null)
+    setProjectHeaderSubmenu(null)
+    setProjectSortByState(sortBy)
+    const nextOrder: string[] = []
+    setProjectOrder(nextOrder)
+    persistSidebarProjectPreferences(buildSidebarProjectPreferences(
+      nextOrder,
+      pinnedProjectKeys,
+      hiddenProjectKeys,
+      projectOrganization,
+      sortBy,
+    ))
+  }, [hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, projectOrganization])
+
+  const closeProjectEditor = useCallback(() => {
+    projectRootLookupRevisionRef.current += 1
+    projectRootLookupRef.current = null
+    setProjectEditor(null)
+    setProjectEditorError(null)
+  }, [])
+
+  const openProjectCreator = useCallback(() => {
+    projectRootLookupRevisionRef.current += 1
+    projectRootLookupRef.current = null
+    setProjectHeaderMenu(null)
+    setProjectHeaderSubmenu(null)
+    setProjectEditorError(null)
+    setProjectEditor({
+      mode: 'create',
+      sourceFolder: '',
+      logicalRoot: '',
+      suggestedName: '',
+    })
+  }, [])
+
+  const updateProjectCreatorSourceFolder = useCallback((sourceFolder: string) => {
+    const lookupRevision = ++projectRootLookupRevisionRef.current
+    const fallbackSuggestedName = sourceFolder ? projectTitle(sourceFolder) : ''
+    setProjectEditor((current) => current?.mode === 'create'
+      ? {
+        ...current,
+        sourceFolder,
+        logicalRoot: sourceFolder,
+        suggestedName: fallbackSuggestedName,
+      }
+      : current)
+
+    if (!sourceFolder.trim()) {
+      projectRootLookupRef.current = null
+      return
+    }
+
+    const request = sessionsApi.getRepositoryContext(sourceFolder)
+    projectRootLookupRef.current = { sourceFolder, request }
+    void request
+      .then((context) => {
+        if (projectRootLookupRevisionRef.current !== lookupRevision) return
+        const logicalRoot = context.repoRoot || context.workDir || sourceFolder
+        setProjectEditor((current) => current?.mode === 'create' && current.sourceFolder === sourceFolder
+          ? {
+            ...current,
+            logicalRoot,
+            suggestedName: projectTitle(logicalRoot),
+          }
+          : current)
+      })
+      .catch(() => {
+        if (projectRootLookupRef.current?.request === request) {
+          projectRootLookupRef.current = null
+        }
+      })
+  }, [])
+
+  const submitProjectCreation = useCallback(async ({ name, sourceFolder, logicalRoot }: ProjectEditorSubmission) => {
+    setProjectEditorLoading(true)
+    setProjectEditorError(null)
+    try {
+      const cachedLookup = projectRootLookupRef.current
+      const contextRequest = (cachedLookup?.sourceFolder === sourceFolder
+        ? cachedLookup.request
+        : sessionsApi.getRepositoryContext(sourceFolder))
+        .catch(() => null)
+      const sessionId = await useSessionStore.getState().createSession(sourceFolder)
+      restoreHiddenProjectForWorkDir(sourceFolder)
+
+      useTabStore.getState().openTab(sessionId, t('sidebar.newSession'))
+      useChatStore.getState().connectToSession(sessionId)
+      closeProjectEditor()
+
+      const context = await contextRequest
+      const resolvedLogicalRoot = context?.repoRoot || context?.workDir || logicalRoot || sourceFolder
+      try {
+        await saveProjectDisplayName(resolvedLogicalRoot, name)
+      } catch (displayNameError) {
+        addToast({
+          type: 'error',
+          message: displayNameError instanceof Error
+            ? displayNameError.message
+            : t('sidebar.projectEditor.actionFailed'),
+        })
+      }
+    } catch (error) {
+      setProjectEditorError(error instanceof Error ? error.message : t('sidebar.sessionListFailed'))
+    } finally {
+      setProjectEditorLoading(false)
+    }
+  }, [addToast, closeProjectEditor, restoreHiddenProjectForWorkDir, t])
+
+  const openProjectEditor = useCallback((project: ProjectGroup) => {
+    if (project.key === 'unknown' || !project.workDir) return
+    projectRootLookupRevisionRef.current += 1
+    setProjectContextMenu(null)
+    setProjectEditorError(null)
+    setProjectEditor({ mode: 'edit', logicalRoot: project.key })
+  }, [])
+
+  const submitProjectEdit = useCallback(async ({ name, logicalRoot }: ProjectEditorSubmission) => {
+    setProjectEditorLoading(true)
+    setProjectEditorError(null)
+    try {
+      await saveProjectDisplayName(logicalRoot, name)
+      closeProjectEditor()
+    } catch (error) {
+      setProjectEditorError(error instanceof Error ? error.message : t('sidebar.sessionListFailed'))
+    } finally {
+      setProjectEditorLoading(false)
+    }
+  }, [closeProjectEditor, t])
+
+  const restoreProjectFolderName = useCallback(async (logicalRoot: string) => {
+    setProjectEditorLoading(true)
+    setProjectEditorError(null)
+    try {
+      await resetProjectDisplayName(logicalRoot)
+    } catch (error) {
+      setProjectEditorError(error instanceof Error ? error.message : t('sidebar.sessionListFailed'))
+      throw error
+    } finally {
+      setProjectEditorLoading(false)
+    }
+  }, [t])
+
+  const togglePinnedProject = useCallback((projectKey: string) => {
+    setProjectContextMenu(null)
+    setPinnedProjectKeys((current) => {
+      const next = new Set(current)
+      if (next.has(projectKey)) {
+        next.delete(projectKey)
+      } else {
+        next.add(projectKey)
+      }
+      persistSidebarProjectPreferences(buildSidebarProjectPreferences(projectOrder, next, hiddenProjectKeys, projectOrganization, projectSortBy))
+      return next
+    })
+  }, [hiddenProjectKeys, persistSidebarProjectPreferences, projectOrder, projectOrganization, projectSortBy])
+
+  const restoreAllHiddenProjects = useCallback(() => {
+    setProjectHeaderMenu(null)
+    setProjectHeaderSubmenu(null)
+    setHiddenProjectKeys((current) => {
+      if (current.size === 0) return current
+      const next = new Set<string>()
+      persistSidebarProjectPreferences(buildSidebarProjectPreferences(
+        projectOrder,
+        pinnedProjectKeys,
+        next,
+        projectOrganization,
+        projectSortBy,
+      ))
+      return next
+    })
+  }, [persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectOrganization, projectSortBy])
+
+  const toggleHiddenProject = useCallback((project: ProjectGroup) => {
+    const wasHidden = hiddenProjectKeys.has(project.key)
+    setProjectContextMenu(null)
+    setHiddenProjectKeys((current) => {
+      const next = new Set(current)
+      if (next.has(project.key)) {
+        next.delete(project.key)
+      } else {
+        next.add(project.key)
+      }
+      persistSidebarProjectPreferences(buildSidebarProjectPreferences(projectOrder, pinnedProjectKeys, next, projectOrganization, projectSortBy))
+      return next
+    })
+    if (!wasHidden) {
+      addToast({
+        type: 'info',
+        message: t('sidebar.projectHidden', { project: project.title }),
+      })
+    }
+  }, [addToast, hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectOrganization, projectSortBy, t])
+
+  const hideProjectFromSidebar = useCallback((project: ProjectGroup) => {
+    setProjectContextMenu(null)
+    if (hiddenProjectKeys.has(project.key)) return
+
+    setHiddenProjectKeys((current) => {
+      if (current.has(project.key)) return current
+      const next = new Set(current)
+      next.add(project.key)
+      persistSidebarProjectPreferences(buildSidebarProjectPreferences(projectOrder, pinnedProjectKeys, next, projectOrganization, projectSortBy))
+      return next
+    })
+    addToast({
+      type: 'info',
+      message: t('sidebar.projectHidden', { project: project.title }),
+    })
+  }, [addToast, hiddenProjectKeys, persistSidebarProjectPreferences, pinnedProjectKeys, projectOrder, projectOrganization, projectSortBy, t])
+
+  const openProjectInFileManager = useCallback(async (project: ProjectGroup) => {
+    setProjectContextMenu(null)
+    try {
+      if (!project.workDir) {
+        throw new Error(t('sidebar.openInFileManagerUnavailable'))
+      }
+      const store = useOpenTargetStore.getState()
+      await store.ensureTargets()
+      const latest = useOpenTargetStore.getState()
+      const target = latest.targets.find((item) => item.id === 'finder')
+        ?? latest.targets.find((item) => item.kind === 'file_manager')
+      if (!target) {
+        throw new Error(t('sidebar.openInFileManagerUnavailable'))
+      }
+      await latest.openTarget(target.id, project.workDir)
+    } catch (error) {
+      addToast({
+        type: 'error',
+        message: error instanceof Error ? error.message : t('sidebar.openInFileManagerFailed'),
+      })
+    }
+  }, [addToast, t])
+
+  const handleDelete = useCallback((id: string) => {
+    setContextMenu(null)
+    setPendingDeleteSessionId(id)
+  }, [])
+
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDeleteSessionId) return
+    await deleteSession(pendingDeleteSessionId)
+    disconnectSession(pendingDeleteSessionId)
+    releaseWorkspaceSession(pendingDeleteSessionId)
+    closeTab(pendingDeleteSessionId)
+    setPendingDeleteSessionId(null)
+  }, [closeTab, deleteSession, disconnectSession, pendingDeleteSessionId])
+
+  const handleBatchSessionClick = useCallback((event: React.MouseEvent, id: string) => {
+    if (event.shiftKey && lastSelectedSessionId) {
+      const start = filteredSessionIds.indexOf(lastSelectedSessionId)
+      const end = filteredSessionIds.indexOf(id)
+      if (start >= 0 && end >= 0) {
+        const [from, to] = start < end ? [start, end] : [end, start]
+        selectSessions(filteredSessionIds.slice(from, to + 1))
+        setLastSelectedSessionId(id)
+        return
+      }
+    }
+
+    toggleSessionSelected(id)
+    setLastSelectedSessionId(id)
+  }, [filteredSessionIds, lastSelectedSessionId, selectSessions, toggleSessionSelected])
+
+  /** 两个视图共用一份「点会话行」的行为，避免任务视图漏掉批量模式这一支。 */
+  const handleSessionRowClick = useCallback((event: React.MouseEvent, session: SessionListItem) => {
+    if (isBatchMode) {
+      handleBatchSessionClick(event, session.id)
+      return
+    }
+    useSessionStore.getState().openHistoricalSession(session)
+    useChatStore.getState().connectToSession(session.id)
+  }, [handleBatchSessionClick, isBatchMode])
+
+  const handleExitBatchMode = useCallback(() => {
+    exitBatchMode()
+    setLastSelectedSessionId(null)
+    setPendingBatchDeleteSessionIds(null)
+  }, [exitBatchMode])
+
+  const requestBatchDelete = useCallback((ids: string[]) => {
+    if (ids.length === 0) return
+    setPendingBatchDeleteSessionIds([...new Set(ids)])
+  }, [])
+
+  const confirmBatchDelete = useCallback(async () => {
+    const ids = pendingBatchDeleteSessionIds ?? []
+    if (ids.length === 0) return
+
+    setIsBatchDeleting(true)
+    try {
+      const result = await deleteSessions(ids)
+      for (const sessionId of result.successes) {
+        disconnectSession(sessionId)
+        releaseWorkspaceSession(sessionId)
+        closeTab(sessionId)
+      }
+
+      if (result.failures.length > 0) {
+        addToast({
+          type: 'error',
+          message: t('sidebar.batchDeleteFailed', { count: result.failures.length }),
+        })
+      } else {
+        addToast({
+          type: 'success',
+          message: t('sidebar.batchDeleteSucceeded', { count: result.successes.length }),
+        })
+        handleExitBatchMode()
+      }
+      setPendingBatchDeleteSessionIds(null)
+    } catch (error) {
+      addToast({
+        type: 'error',
+        message: error instanceof Error ? error.message : t('sidebar.batchDeleteFailed', { count: ids.length }),
+      })
+    } finally {
+      setIsBatchDeleting(false)
+    }
+  }, [addToast, closeTab, deleteSessions, disconnectSession, handleExitBatchMode, pendingBatchDeleteSessionIds, t])
+
+  const toggleGroupSelection = useCallback((ids: string[]) => {
+    const allSelected = ids.every((id) => selectedSessionIds.has(id))
+    if (allSelected) {
+      deselectSessions(ids)
+    } else {
+      selectSessions(ids)
+    }
+  }, [deselectSessions, selectSessions, selectedSessionIds])
+
+  const toggleProjectCollapsed = useCallback((projectKey: string) => {
+    if (suppressProjectClickRef.current === projectKey) {
+      suppressProjectClickRef.current = null
+      return
+    }
+    setCollapsedProjectKeys((current) => {
+      const next = new Set(current)
+      if (next.has(projectKey)) {
+        next.delete(projectKey)
+      } else {
+        next.add(projectKey)
+      }
+      writeStoredProjectCollapsed(next)
+      return next
+    })
+  }, [])
+
+  const toggleProjectSessionExpansion = useCallback((projectKey: string) => {
+    setExpandedProjectKeys((current) => {
+      const next = new Set(current)
+      if (next.has(projectKey)) {
+        next.delete(projectKey)
+      } else {
+        next.add(projectKey)
+      }
+      return next
+    })
+  }, [])
+
+  const handleStartRename = useCallback((id: string, currentTitle: string) => {
+    setContextMenu(null)
+    setRenamingId(id)
+    setRenameValue(currentTitle)
+  }, [])
+
+  const handleFinishRename = useCallback(async () => {
+    if (renamingId && renameValue.trim()) {
+      await renameSession(renamingId, renameValue.trim())
+    }
+    setRenamingId(null)
+    setRenameValue('')
+  }, [renamingId, renameValue, renameSession])
+
+  const cancelRename = useCallback(() => {
+    setRenamingId(null)
+    setRenameValue('')
+  }, [])
+
+  useEffect(() => {
+    if (!isBatchMode) return
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target?.closest('input, textarea, [contenteditable="true"]')) return
+
+      if (event.key === 'Escape') {
+        handleExitBatchMode()
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a') {
+        event.preventDefault()
+        selectSessions(filteredSessionIds)
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [filteredSessionIds, handleExitBatchMode, isBatchMode, selectSessions])
+
+  return (
+    <aside
+      className="sidebar-panel relative h-full flex flex-col bg-[var(--color-surface-sidebar)] select-none"
+      data-state={expanded ? 'open' : 'closed'}
+      aria-label={t('sidebar.regionLabel')}
+    >
+      <div
+        data-testid="sidebar-title-region"
+        data-desktop-drag-region
+        className={`px-2 pb-2 ${isDesktopRuntime && !isWindows ? 'pt-[44px]' : 'pt-3'}`}
+      >
+        <div className={`flex ${expanded ? 'items-center justify-between gap-2' : 'flex-col items-center gap-2'}`}>
+          {/* The mark only stands in for the wordmark on the rail. Expanded,
+              the name says it better and the icon beside it is just clutter;
+              collapsed, the copy is width-clamped to zero and the header would
+              otherwise be empty. The rotating glass star at 32px: the star is
+              thin, so it needs more room than the old 24px tile to read;
+              `-my-0.5` keeps the row at the buttons' 28px. */}
+          {/* Expanded, `pl-2` lands the wordmark on the same 16px line as the
+              nav icons, the search glyph and the settings gear below it.
+              Collapsed, the mark is centered on the rail instead. */}
+          <div className={`flex min-w-0 items-center ${expanded ? 'gap-1.5 pl-1.5' : 'justify-center'}`}>
+            <BrandSeal size="md" animated className="-my-0.5" />
+            <span
+              data-testid="sidebar-brand-name"
+              className={`sidebar-copy ${expanded ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} min-w-0 text-ellipsis text-[15px] font-semibold leading-5 text-[var(--color-text-primary)]`}
+            >
+              {brand.name}
+            </span>
+          </div>
+          <div className={`flex items-center ${expanded ? 'gap-0.5' : 'flex-col gap-2'}`}>
+            {/* Search lives in the top bar (TRAE), not as a box in the list. */}
+            <IconButton
+              icon={<Search size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+              label={`${t('search.global.trigger')} (${MOD_KEY}K)`}
+              onClick={() => openModal('globalSearch')}
+              size="sm"
+              tone="muted"
+              surface="sidebar"
+              tabIndex={expanded ? undefined : -1}
+              data-testid="sidebar-search-button"
+            />
+            {/* 折叠态下整个会话列表都不渲染，露一个切不动视图的铃铛只会让人点空。
+                跟 GitHub 链接同一套处理：宽度夹到零、退出 tab 顺序，并且 `aria-hidden`
+                ——`sidebar-copy--hidden` 只是 `max-width:0; opacity:0`，元素仍留在
+                无障碍树里，少了这一条读屏还会念出一个按不动的按钮。 */}
+            <span
+              className={`sidebar-copy ${expanded ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} inline-flex`}
+              aria-hidden={!expanded}
+            >
+              <IconButton
+                icon={<Bell size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+                label={t('sidebar.taskView')}
+                onClick={toggleTaskView}
+                size="sm"
+                tone="muted"
+                pressed={isTaskView}
+                surface="sidebar"
+                tabIndex={expanded ? undefined : -1}
+                data-testid="sidebar-task-view-toggle"
+              />
+            </span>
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              data-testid={expanded ? 'sidebar-collapse-button' : 'sidebar-expand-button'}
+              className={`sidebar-toggle-button ${expanded ? 'sidebar-toggle-button--open h-7 w-7' : 'sidebar-toggle-button--collapsed h-8 w-8'} flex items-center justify-center rounded-[var(--radius-sm)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface-sidebar)]`}
+              aria-label={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
+              title={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
+            >
+              <SidebarToggleIcon collapsed={!expanded} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <StarModeSwitch collapsed={!expanded} />
+      <StarSidebarNav
+        Item={NavItem}
+        collapsed={!expanded}
+        activeTabId={activeTabId}
+        onNewSession={createSessionInCurrentProject}
+        modKey={MOD_KEY}
+        newSessionLabel={t('sidebar.newSession')}
+        newTaskLabel={t('sidebar.newTask')}
+        extensionsLabel={t('sidebar.extensions')}
+        scheduledLabel={t('sidebar.scheduled')}
+      />
+
+      {expanded ? (
+        <>
+          <div
+            data-testid="sidebar-session-list-section"
+            className="sidebar-section sidebar-section--visible flex flex-1 min-h-0 flex-col"
+          >
+            {isBatchMode && (
+              <div className="mx-2 mb-1 mt-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-2">
+                <div className="flex items-center justify-between gap-2 pl-1">
+                  <span className="min-w-0 text-[12px] font-medium tabular-nums text-[var(--color-text-primary)]">
+                    {t('sidebar.batchSelectedCount', { count: selectedCount })}
+                  </span>
+                  <IconButton
+                    icon={<X size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+                    label={t('sidebar.batchExit')}
+                    onClick={handleExitBatchMode}
+                    size="xs"
+                    tone="muted"
+                  />
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-1.5">
+                  <Button
+                    variant="secondary"
+                    size="base"
+                    onClick={() => {
+                      if (filteredSessionIds.every((id) => selectedSessionIds.has(id))) {
+                        deselectSessions(filteredSessionIds)
+                      } else {
+                        selectSessions(filteredSessionIds)
+                      }
+                    }}
+                    disabled={filteredSessionIds.length === 0}
+                  >
+                    {filteredSessionIds.length > 0 && filteredSessionIds.every((id) => selectedSessionIds.has(id))
+                      ? t('sidebar.batchDeselectAll')
+                      : t('sidebar.batchSelectAll')}
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="base"
+                    onClick={() => requestBatchDelete([...selectedSessionIds])}
+                    disabled={selectedCount === 0}
+                  >
+                    {t('sidebar.batchDeleteSelected', { count: selectedCount })}
+                  </Button>
+                </div>
+              </div>
+            )}
+            <div
+              ref={sessionScrollAreaRef}
+              onScroll={(event) => notifyProjectHistoryAtSidebarBottom(event.currentTarget)}
+              data-testid="sidebar-session-scroll-area"
+              className="sidebar-scroll-area group/sidebar-list min-h-0 flex-1 overflow-y-auto px-2 pb-20 pt-2"
+              style={checkinBannerShown ? { paddingBottom: 128 } : undefined}
+            >
+              {/* Refresh and batch-manage used to sit beside the search box as
+                  two full-size bordered buttons, which made them read as peers
+                  of search. They are list maintenance, so they live with the
+                  list: in this section header, revealed on hover like its other
+                  actions. The header stays
+                  rendered while the first load is in flight, so a stuck load can
+                  still be retried by hand. */}
+              <ProjectHeaderActions
+                title={isTaskView ? t('sidebar.tasks') : t('sidebar.projects')}
+                menuLabel={t('sidebar.projectMenu')}
+                createLabel={t('sidebar.newProject')}
+                refreshLabel={t('sidebar.refreshSessions')}
+                refreshing={showRefreshLoading}
+                onRefresh={() => void refreshSessionsNow()}
+                batchLabel={isBatchMode ? t('sidebar.batchExit') : t('sidebar.batchManage')}
+                batchActive={isBatchMode}
+                onToggleBatch={isBatchMode ? handleExitBatchMode : enterBatchMode}
+                onOpenMenu={(event) => openProjectHeaderMenu(event, 'main')}
+                onOpenCreate={(event) => openProjectHeaderMenu(event, 'create')}
+                actionsRef={projectHeaderActionsRef}
+              />
+              {showInitialLoading ? (
+                <div className="px-2 py-4 text-center text-[12px] text-[var(--color-text-tertiary)]">
+                  {t('common.loading')}
+                </div>
+              ) : filteredSessions.length === 0 && (
+                <div className="px-2 py-2">
+                  <EmptyState variant="inline" title={t('sidebar.noSessions')} />
+                </div>
+              )}
+              {isTaskView ? (
+                <SidebarTaskList
+                  groups={taskGroups}
+                  activeTabId={activeTabId}
+                  runningSessionIds={runningSessionIds}
+                  attentionSessionIds={attentionSessionIds}
+                  selectedSessionIds={selectedSessionIds}
+                  isBatchMode={isBatchMode}
+                  renamingId={renamingId}
+                  renameValue={renameValue}
+                  workspaceLabelFor={workspaceLabelFor}
+                  onRenameChange={setRenameValue}
+                  onFinishRename={handleFinishRename}
+                  onCancelRename={cancelRename}
+                  onSessionClick={handleSessionRowClick}
+                  onSessionContextMenu={handleContextMenu}
+                  t={t}
+                />
+              ) : visibleProjectGroups.map((project) => {
+                const projectCollapsed = collapsedProjectKeys.has(project.key)
+                const sessionsExpanded = expandedProjectKeys.has(project.key)
+                const visibleItems = projectCollapsed
+                  ? []
+                  : getVisibleProjectSessions(project.sessions, sessionsExpanded, activeTabId, attentionSessionIds)
+                const hiddenCount = project.sessions.length - visibleItems.length
+                const projectSessionTotal = projectSessionTotals[project.key]
+                const hasUnloadedSessions = projectSessionTotal === undefined
+                  ? false
+                  : projectSessionTotal > project.sessions.length
+                const showSessionFoldControl = project.sessions.length > PROJECT_GROUP_VISIBLE_COUNT ||
+                  (projectSessionTotal ?? 0) > PROJECT_GROUP_VISIBLE_COUNT
+                const groupIds = project.sessions.map((session) => session.id)
+                const groupSelectedCount = groupIds.filter((id) => selectedSessionIds.has(id)).length
+                const history = projectHistory[project.key]
+                const isProjectDragging = draggingProjectKey === project.key
+                const isProjectPinned = pinnedProjectKeys.has(project.key)
+                const dropBefore = projectDropTarget?.key === project.key && projectDropTarget.position === 'before'
+                const dropAfter = projectDropTarget?.key === project.key && projectDropTarget.position === 'after'
+                return (
+                  <section
+                    key={project.key}
+                    data-testid={`sidebar-project-group-${domSafeProjectKey(project.key)}`}
+                    onDragOver={(event) => handleProjectDragOver(event, project.key)}
+                    onDrop={(event) => handleProjectDrop(event, project.key)}
+                    onDragLeave={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                        setProjectDropTarget((current) => current?.key === project.key ? null : current)
+                      }
+                    }}
+                    className={`group/project relative mb-2.5 transition-opacity ${isProjectDragging ? 'opacity-50' : ''}`}
+                  >
+                    {dropBefore && (
+                      <div className="pointer-events-none absolute -top-1 left-1 right-1 z-10 h-0.5 rounded-full bg-[var(--color-brand)]" />
+                    )}
+                    <div className="flex items-center gap-0.5">
+                      <button
+                        type="button"
+                        draggable={!isBatchMode}
+                        onDragStart={(event) => handleProjectDragStart(event, project.key)}
+                        onDragEnd={clearProjectDragState}
+                        onClick={() => toggleProjectCollapsed(project.key)}
+                        data-state={projectCollapsed ? 'closed' : 'open'}
+                        className={`flex min-w-0 flex-1 cursor-grab items-center gap-2 rounded-[var(--radius-sm)] px-2 text-left transition-colors active:cursor-grabbing hover:bg-[var(--color-sidebar-item-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] h-7`}
+                        aria-expanded={!projectCollapsed}
+                        aria-label={t(projectCollapsed ? 'sidebar.expandProject' : 'sidebar.collapseProject', { project: project.title })}
+                        title={project.subtitle || project.title}
+                      >
+                        {/* Open and closed differ by glyph, not by ink: every
+                            project header reads at the same weight. */}
+                        <span
+                          data-testid={`sidebar-project-icon-${domSafeProjectKey(project.key)}`}
+                          data-icon-state={projectCollapsed ? 'closed' : 'open'}
+                          className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-[var(--color-text-tertiary)]"
+                        >
+                          {projectCollapsed ? (
+                            <Folder size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                          ) : (
+                            <FolderOpen size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                          )}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-[var(--color-text-secondary)]">
+                          {project.title}
+                        </span>
+                        {isProjectPinned && (
+                          <Pin size={12} strokeWidth={2} className="flex-shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true" />
+                        )}
+                        {!isBatchMode && (
+                          <span
+                            data-testid={`sidebar-project-count-${domSafeProjectKey(project.key)}`}
+                            className="flex-shrink-0 text-[11px] font-medium tabular-nums text-[var(--color-text-tertiary)] group-hover/project:hidden group-focus-within/project:hidden"
+                          >
+                            {projectSessionTotal ?? project.sessions.length}
+                          </span>
+                        )}
+                      </button>
+                      <div className="flex flex-shrink-0 items-center gap-1">
+                        {isBatchMode && (
+                          <button
+                            type="button"
+                            onClick={() => toggleGroupSelection(groupIds)}
+                            className={`h-6 rounded-[var(--radius-sm)] px-1.5 text-[11px] font-medium transition-colors hover:bg-[var(--color-sidebar-item-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] ${
+                              groupSelectedCount > 0
+                                ? 'text-[var(--color-text-primary)]'
+                                : 'text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]'
+                            }`}
+                            aria-label={t('sidebar.batchSelectGroup', { group: project.title })}
+                          >
+                            {groupSelectedCount === groupIds.length
+                              ? t('sidebar.batchDeselectAll')
+                              : t('sidebar.batchSelectAll')}
+                          </button>
+                        )}
+                        {!isBatchMode && (
+                          // Revealed on row hover, in place of the session
+                          // count. At rest they take no width (clipped, still
+                          // focusable), so the title keeps the whole row.
+                          <div className="flex items-center pointer-events-none max-w-0 gap-0.5 overflow-hidden opacity-0 transition-opacity duration-150 group-hover/project:pointer-events-auto group-hover/project:max-w-none group-hover/project:overflow-visible group-hover/project:opacity-100 group-focus-within/project:pointer-events-auto group-focus-within/project:max-w-none group-focus-within/project:overflow-visible group-focus-within/project:opacity-100">
+                            <IconButton
+                              icon={<Ellipsis size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+                              label={t('sidebar.projectActions', { project: project.title })}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setContextMenu(null)
+                                setProjectContextMenu({ key: project.key, x: event.clientX, y: event.clientY })
+                              }}
+                              size="sm"
+                              tone="muted"
+                              surface="sidebar"
+                            />
+                            <IconButton
+                              icon={<SquarePen size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+                              label={t('sidebar.newSessionInProject', { project: project.title })}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void openDraftForWorkDir(project.workDir)
+                              }}
+                              size="sm"
+                              tone="muted"
+                              surface="sidebar"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {!projectCollapsed && (
+                      <div className="mt-px">
+                        <ProjectSessionList
+                          projectKey={project.key}
+                          outerScrollRef={sessionScrollAreaRef}
+                          testId={`sidebar-project-session-list-${domSafeProjectKey(project.key)}`}
+                          expanded={sessionsExpanded}
+                          hasHiddenSessions={hiddenCount > 0 || hasUnloadedSessions}
+                          itemCount={visibleItems.length}
+                          nextCursor={history?.nextCursor}
+                          isLoading={history?.isLoading ?? false}
+                          hasMore={history?.hasMore ?? (projectSessionTotal === undefined || hasUnloadedSessions)}
+                          error={history?.error}
+                          onExpand={() => setExpandedProjectKeys((current) => new Set([...current, project.key]))}
+                          onLoadMore={() => useSessionStore.getState().loadMoreProjectSessions(project.key)}
+                          onRelease={() => useSessionStore.getState().releaseProjectHistory(project.key)}
+                        >
+                          {visibleItems.map((session) => (
+                            <div
+                              key={session.id}
+                              data-sidebar-session-id={session.id}
+                              className="relative mb-px last:mb-0"
+                            >
+                              {renamingId === session.id ? (
+                                <input
+                                  autoFocus
+                                  value={renameValue}
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  onBlur={handleFinishRename}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleFinishRename()
+                                    if (e.key === 'Escape') cancelRename()
+                                  }}
+                                  className={`w-full rounded-[var(--radius-sm)] border border-[var(--color-border-focus)] bg-[var(--color-surface)] pl-[31px] pr-2 text-[13px] text-[var(--color-text-primary)] outline-none h-[30px]`}
+                                />
+                              ) : (
+                                <button
+                                  onClick={(event) => handleSessionRowClick(event, session)}
+                                  onContextMenu={(e) => handleContextMenu(e, session.id)}
+                                  // `pl-8` puts the title on the project name's
+                                  // line (8px inset + 16px folder + 8px gap), while
+                                  // the row's own fill still spans the full width.
+                                  className={`
+                                    group/session flex w-full items-center rounded-[var(--radius-sm)] pl-8 pr-2 h-[30px] text-left text-[13px] transition-[background,color,box-shadow] duration-150
+                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-surface-sidebar)]
+                                    ${selectedSessionIds.has(session.id)
+                                      ? `sidebar-session-row--selected ${SIDEBAR_ROW_RAISED} font-medium`
+                                      : session.id === activeTabId
+                                      // The open session is a white card lifted off the
+                                      // sidebar ground: page fill, hairline, raised step.
+                                      ? `sidebar-session-row--active ${SIDEBAR_ROW_RAISED} font-medium`
+                                      : 'sidebar-session-row--idle text-[var(--color-text-secondary)] hover:bg-[var(--color-sidebar-item-hover)] hover:text-[var(--color-text-primary)]'
+                                    }
+                                  `}
+                                  aria-pressed={isBatchMode ? selectedSessionIds.has(session.id) : undefined}
+                                  title={session.title || t('tabs.untitled')}
+                                >
+                                  <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                                    {isBatchMode ? (
+                                      <span
+                                        className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[var(--radius-xs)] border transition-colors ${
+                                          selectedSessionIds.has(session.id)
+                                            ? 'border-[var(--color-brand)] bg-[var(--color-brand)] text-[var(--color-on-primary)]'
+                                            // Hairline `--color-border` only reaches 1.2:1 here; a control
+                                            // boundary needs 3:1 (WCAG 1.4.11).
+                                            : 'border-[var(--color-border-strong)] bg-[var(--color-surface)]'
+                                        }`}
+                                        aria-hidden="true"
+                                      >
+                                        {selectedSessionIds.has(session.id) && (
+                                          <Check size={12} strokeWidth={2} aria-hidden="true" />
+                                        )}
+                                      </span>
+                                    ) : null}
+                                    <span className="min-w-0 flex-1 truncate">{session.title || t('tabs.untitled')}</span>
+                                    {getSessionWorkspaceState(session) === 'missing' && (
+                                      <span
+                                        className="flex-shrink-0 text-[11px] text-[var(--color-warning)]"
+                                        title={session.workDir ?? ''}
+                                      >
+                                        {t('sidebar.missingDir')}
+                                      </span>
+                                    )}
+                                    <SessionScheduleMark sessionId={session.id} />
+                                    <SessionRowMeta
+                                      isRunning={runningSessionIds.has(session.id)}
+                                      needsAttention={attentionSessionIds.has(session.id)}
+                                      isWorktree={isWorktreeSession(session)}
+                                      modifiedAt={session.modifiedAt}
+                                      t={t}
+                                    />
+                                  </span>
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </ProjectSessionList>
+                        {showSessionFoldControl && (
+                          <div className="mt-px flex justify-start">
+                            <button
+                              type="button"
+                              onClick={() => toggleProjectSessionExpansion(project.key)}
+                              className={`inline-flex items-center justify-start rounded-[var(--radius-sm)] pl-8 pr-2 text-[12px] text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] h-7`}
+                              aria-expanded={sessionsExpanded}
+                            >
+                              {sessionsExpanded
+                                ? t('sidebar.showFewerSessions')
+                                : t('sidebar.showMoreSessions')}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {dropAfter && (
+                      <div className="pointer-events-none absolute -bottom-1 left-1 right-1 z-10 h-0.5 rounded-full bg-[var(--color-brand)]" />
+                    )}
+                  </section>
+                )
+              })}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="flex-1" aria-hidden="true" />
+      )}
+
+      {(
+        <div
+          data-testid="sidebar-settings-dock"
+          className="sidebar-settings-dock absolute bottom-0 left-0 right-0 border-t border-[var(--color-border)] p-2"
+        >
+          {checkinBannerShown ? <StarCheckinBanner /> : null}
+          <div className={`flex items-center ${expanded ? 'gap-1' : 'justify-center'}`}>
+            {/* STAR account (avatar, name, plan, menu) with the settings button. */}
+            <StarAccountDock collapsed={!expanded} version={appVersion} />
+          </div>
+        </div>
+      )}
+
+      {contextMenu && (
+        <div
+          ref={sessionContextMenuRef}
+          className="fixed z-[var(--z-dropdown)] min-w-[180px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-1 shadow-[var(--shadow-dropdown)]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            onClick={() => {
+              const session = sessions.find((s) => s.id === contextMenu.id)
+              handleStartRename(contextMenu.id, session?.title || '')
+            }}
+            className="flex h-8 w-full items-center rounded-[var(--radius-sm)] px-2.5 text-left text-[13px] text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+          >
+            {t('common.rename')}
+          </button>
+          <button
+            onClick={() => handleDelete(contextMenu.id)}
+            className="flex h-8 w-full items-center rounded-[var(--radius-sm)] px-2.5 text-left text-[13px] text-[var(--color-error)] transition-colors hover:bg-[var(--color-error-container)]"
+          >
+            {t('common.delete')}
+          </button>
+        </div>
+      )}
+
+      {projectContextMenu && (() => {
+        const project = orderedProjectGroups.find((group) => group.key === projectContextMenu.key)
+        if (!project) return null
+        const pinned = pinnedProjectKeys.has(project.key)
+        const hidden = hiddenProjectKeys.has(project.key)
+        return (
+          <div
+            ref={projectContextMenuRef}
+            role="menu"
+            className="fixed z-[var(--z-dropdown)] min-w-[230px] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-1 shadow-[var(--shadow-dropdown)]"
+            style={positionProjectMenu(projectContextMenu.x, projectContextMenu.y)}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {project.key !== 'unknown' && project.workDir && (
+              <ProjectMenuItem
+                icon={<SquarePen size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+                onClick={() => openProjectEditor(project)}
+              >
+                {t('sidebar.projectEditor.editTitle')}
+              </ProjectMenuItem>
+            )}
+            <ProjectMenuItem
+              icon={pinned ? <PinOff size={16} strokeWidth={ICON_STROKE} aria-hidden="true" /> : <Pin size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+              onClick={() => togglePinnedProject(project.key)}
+            >
+              {t(pinned ? 'sidebar.unpinProject' : 'sidebar.pinProject')}
+            </ProjectMenuItem>
+            <ProjectMenuItem
+              icon={<FolderOpen size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+              onClick={() => void openProjectInFileManager(project)}
+            >
+              {t(openInFileManagerKey(fileManagerPlatform))}
+            </ProjectMenuItem>
+            <ProjectMenuItem
+              icon={hidden ? <RotateCcw size={16} strokeWidth={ICON_STROKE} aria-hidden="true" /> : <X size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+              onClick={() => toggleHiddenProject(project)}
+              danger={!hidden}
+            >
+              {t(hidden ? 'sidebar.restoreProjectToSidebar' : 'sidebar.hideProjectFromSidebar')}
+            </ProjectMenuItem>
+          </div>
+        )
+      })()}
+
+      {projectHeaderMenu && (
+        <ProjectHeaderMenu
+          ref={projectHeaderMenuRef}
+          type={projectHeaderMenu.type}
+          x={projectHeaderMenu.x}
+          y={projectHeaderMenu.y}
+          organization={projectOrganization}
+          sortBy={projectSortBy}
+          onOpenSubmenu={openProjectHeaderSubmenu}
+          onSetOrganization={updateProjectOrganization}
+          onSetSortBy={updateProjectSortBy}
+          onCreateBlank={() => void openDraftForWorkDir('')}
+          onUseExistingFolder={openProjectCreator}
+          onRestoreHiddenProjects={restoreAllHiddenProjects}
+          hiddenProjectCount={hiddenProjectKeys.size}
+          t={t}
+        />
+      )}
+
+      {projectHeaderSubmenu && (
+        <ProjectHeaderMenu
+          ref={projectHeaderSubmenuRef}
+          type={projectHeaderSubmenu.type}
+          x={projectHeaderSubmenu.x}
+          y={projectHeaderSubmenu.y}
+          organization={projectOrganization}
+          sortBy={projectSortBy}
+          onOpenSubmenu={openProjectHeaderSubmenu}
+          onSetOrganization={updateProjectOrganization}
+          onSetSortBy={updateProjectSortBy}
+          onCreateBlank={() => void openDraftForWorkDir('')}
+          onUseExistingFolder={openProjectCreator}
+          onRestoreHiddenProjects={restoreAllHiddenProjects}
+          hiddenProjectCount={hiddenProjectKeys.size}
+          t={t}
+        />
+      )}
+
+      {projectEditor?.mode === 'create' && (
+        <ProjectEditorModal
+          open
+          mode="create"
+          sourceFolder={projectEditor.sourceFolder}
+          logicalRoot={projectEditor.logicalRoot}
+          suggestedName={projectEditor.suggestedName}
+          loading={projectEditorLoading}
+          error={projectEditorError}
+          onClose={closeProjectEditor}
+          onSourceFolderChange={updateProjectCreatorSourceFolder}
+          onSubmit={submitProjectCreation}
+        />
+      )}
+      {projectEditor?.mode === 'edit' && (() => {
+        const customDisplayName = resolveProjectDisplayName(projectEditor.logicalRoot)
+        const project = orderedProjectGroups.find((group) => group.key === projectEditor.logicalRoot)
+        return (
+          <ProjectEditorModal
+            open
+            mode="edit"
+            logicalRoot={projectEditor.logicalRoot}
+            initialName={customDisplayName ?? undefined}
+            suggestedName={projectTitle(projectEditor.logicalRoot)}
+            loading={projectEditorLoading}
+            error={projectEditorError}
+            onClose={closeProjectEditor}
+            onSubmit={submitProjectEdit}
+            onRestoreFolderName={customDisplayName
+              ? () => restoreProjectFolderName(projectEditor.logicalRoot)
+              : undefined}
+            onRemoveFromSidebar={project
+              ? () => {
+                hideProjectFromSidebar(project)
+                closeProjectEditor()
+              }
+              : undefined}
+          />
+        )
+      })()}
+
+      <ConfirmDialog
+        open={pendingDeleteSessionId !== null}
+        onClose={() => setPendingDeleteSessionId(null)}
+        onConfirm={confirmDelete}
+        title={t('common.delete')}
+        body={pendingDeleteSessionId ? t('sidebar.confirmDelete') : ''}
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        confirmVariant="danger"
+      />
+      <ConfirmDialog
+        open={pendingBatchDeleteSessionIds !== null}
+        onClose={() => {
+          if (!isBatchDeleting) setPendingBatchDeleteSessionIds(null)
+        }}
+        onConfirm={confirmBatchDelete}
+        title={t('common.delete')}
+        body={(
+          <div className="space-y-3">
+            <p className="text-sm leading-6 text-[var(--color-text-secondary)]">
+              {t('sidebar.batchDeleteConfirm', { count: pendingBatchDeleteSessionIds?.length ?? 0 })}
+            </p>
+            <div>
+              <div className="mb-1.5 text-xs font-medium text-[var(--color-text-primary)]">
+                {t('sidebar.batchDeleteConfirmBody')}
+              </div>
+              <ul className="max-h-40 space-y-1 overflow-y-auto rounded-[var(--radius-md)] bg-[var(--color-surface-container)] p-2">
+                {pendingBatchDeleteSessions.slice(0, 5).map((session) => (
+                  <li key={session.id} className="truncate text-xs text-[var(--color-text-secondary)]">
+                    {session.title || t('tabs.untitled')}
+                  </li>
+                ))}
+                {(pendingBatchDeleteSessionIds?.length ?? 0) > 5 && (
+                  <li className="text-xs text-[var(--color-text-tertiary)]">
+                    {t('sidebar.batchDeleteMore', { count: (pendingBatchDeleteSessionIds?.length ?? 0) - 5 })}
+                  </li>
+                )}
+              </ul>
+            </div>
+          </div>
+        )}
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        confirmVariant="danger"
+        loading={isBatchDeleting}
+      />
+
+      <GlobalSearchModal open={activeModal === 'globalSearch'} onClose={closeModal} />
+      <FindInPageModal open={activeModal === 'findInPage'} onClose={closeModal} />
+    </aside>
+  )
+}
+
+function readFirstVisibleSessionAnchor(scrollArea: HTMLElement): SessionScrollAnchor | null {
+  const scrollRect = scrollArea.getBoundingClientRect()
+  const rows = scrollArea.querySelectorAll<HTMLElement>('[data-sidebar-session-id]')
+  for (const row of rows) {
+    const rowRect = row.getBoundingClientRect()
+    if (rowRect.bottom <= scrollRect.top || rowRect.top >= scrollRect.bottom) continue
+    const sessionId = row.dataset.sidebarSessionId
+    if (!sessionId) continue
+    return {
+      sessionId,
+      topOffset: rowRect.top - scrollRect.top,
+    }
+  }
+  return null
+}
+
+function findSessionRow(scrollArea: HTMLElement, sessionId: string): HTMLElement | null {
+  const rows = scrollArea.querySelectorAll<HTMLElement>('[data-sidebar-session-id]')
+  for (const row of rows) {
+    if (row.dataset.sidebarSessionId === sessionId) return row
+  }
+  return null
+}
+
+function ProjectHeaderActions({
+  title,
+  menuLabel,
+  createLabel,
+  refreshLabel,
+  refreshing,
+  onRefresh,
+  batchLabel,
+  batchActive,
+  onToggleBatch,
+  onOpenMenu,
+  onOpenCreate,
+  actionsRef,
+}: {
+  title: string
+  menuLabel: string
+  createLabel: string
+  refreshLabel: string
+  refreshing: boolean
+  onRefresh: () => void
+  batchLabel: string
+  batchActive: boolean
+  onToggleBatch: () => void
+  onOpenMenu: (event: React.MouseEvent) => void
+  onOpenCreate: (event: React.MouseEvent) => void
+  /** Handed to `useDismissable` as the trigger, so opening does not self-close. */
+  actionsRef: React.RefObject<HTMLDivElement>
+}) {
+  const size = 'xs'
+  return (
+    <div
+      data-testid="sidebar-projects-header"
+      className="group/sidebar-projects flex h-7 items-center justify-between pl-2 pr-0.5"
+    >
+      <div className="text-[12px] font-semibold text-[var(--color-text-tertiary)]">
+        {title}
+      </div>
+      {/* Hover-revealed anywhere over the list, not only this row — and held
+          open while batch mode is on, so the pressed toggle that ends it
+          stays in sight. */}
+      <div
+        ref={actionsRef}
+        className={`flex items-center gap-0.5 transition-opacity focus-within:opacity-100 ${batchActive ? 'opacity-100' : 'opacity-0'} group-hover/sidebar-projects:opacity-100 group-hover/sidebar-list:opacity-100`}
+      >
+        <IconButton
+          icon={<RefreshCw size={14} strokeWidth={ICON_STROKE} className={refreshing ? 'animate-spin' : undefined} aria-hidden="true" />}
+          label={refreshLabel}
+          onClick={onRefresh}
+          size={size}
+          tone="muted"
+          surface="sidebar"
+        />
+        <IconButton
+          icon={batchActive
+            ? <X size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+            : <ListChecks size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+          label={batchLabel}
+          onClick={onToggleBatch}
+          size={size}
+          tone="muted"
+          surface="sidebar"
+          pressed={batchActive}
+        />
+        <IconButton
+          icon={<Ellipsis size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+          label={menuLabel}
+          onClick={onOpenMenu}
+          size={size}
+          tone="muted"
+          surface="sidebar"
+        />
+        <IconButton
+          icon={<FolderPlus size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+          label={createLabel}
+          onClick={onOpenCreate}
+          size={size}
+          tone="muted"
+          surface="sidebar"
+        />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * `forwardRef` because `useDismissable` needs the rendered menu element to tell
+ * an inside click from an outside one. Without it the hook only ever sees
+ * "outside" and the menu closes the moment any item is pressed.
+ */
+const ProjectHeaderMenu = forwardRef<HTMLDivElement, {
+  type: SidebarHeaderMenuType
+  x: number
+  y: number
+  organization: SidebarProjectOrganization
+  sortBy: SidebarProjectSortBy
+  onOpenSubmenu: (event: React.MouseEvent, type: 'organize' | 'sort') => void
+  onSetOrganization: (organization: SidebarProjectOrganization) => void
+  onSetSortBy: (sortBy: SidebarProjectSortBy) => void
+  onCreateBlank: () => void
+  onUseExistingFolder: () => void
+  onRestoreHiddenProjects: () => void
+  hiddenProjectCount: number
+  t: ReturnType<typeof useTranslation>
+}>(function ProjectHeaderMenu({
+  type,
+  x,
+  y,
+  organization,
+  sortBy,
+  onOpenSubmenu,
+  onSetOrganization,
+  onSetSortBy,
+  onCreateBlank,
+  onUseExistingFolder,
+  onRestoreHiddenProjects,
+  hiddenProjectCount,
+  t,
+}, ref) {
+  const width = type === 'sort' ? 230 : type === 'create' ? 250 : 270
+  const style: React.CSSProperties = { left: x, top: y, width }
+  const className = 'fixed z-[var(--z-dropdown)] overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-1 shadow-[var(--shadow-dropdown)]'
+
+  if (type === 'create') {
+    return (
+      <div ref={ref} role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
+        <HeaderMenuItem icon={<SquarePen size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />} onClick={onCreateBlank}>
+          {t('sidebar.newBlankSession')}
+        </HeaderMenuItem>
+        <HeaderMenuItem icon={<FolderOpen size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />} onClick={onUseExistingFolder}>
+          {t('sidebar.useExistingFolder')}
+        </HeaderMenuItem>
+      </div>
+    )
+  }
+
+  if (type === 'organize') {
+    return (
+      <div ref={ref} role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
+        <HeaderMenuItem icon={<Folder size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />} checked={organization === 'project'} onClick={() => onSetOrganization('project')}>
+          {t('sidebar.organizeByProject')}
+        </HeaderMenuItem>
+        <HeaderMenuItem icon={<FolderOpen size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />} checked={organization === 'recentProject'} onClick={() => onSetOrganization('recentProject')}>
+          {t('sidebar.organizeByRecentProject')}
+        </HeaderMenuItem>
+        <HeaderMenuItem icon={<Clock size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />} checked={organization === 'time'} onClick={() => onSetOrganization('time')}>
+          {t('sidebar.organizeByTime')}
+        </HeaderMenuItem>
+      </div>
+    )
+  }
+
+  if (type === 'sort') {
+    return (
+      <div ref={ref} role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
+        <HeaderMenuItem icon={<Clock size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />} checked={sortBy === 'createdAt'} onClick={() => onSetSortBy('createdAt')}>
+          {t('sidebar.sortByCreatedAt')}
+        </HeaderMenuItem>
+        <HeaderMenuItem icon={<RefreshCw size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />} checked={sortBy === 'updatedAt'} onClick={() => onSetSortBy('updatedAt')}>
+          {t('sidebar.sortByUpdatedAt')}
+        </HeaderMenuItem>
+      </div>
+    )
+  }
+
+  return (
+    <div ref={ref} role="menu" className={className} style={style} onClick={(event) => event.stopPropagation()}>
+      <HeaderMenuItem
+        icon={<Folder size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+        trailing
+        onMouseEnter={(event) => onOpenSubmenu(event, 'organize')}
+        onClick={(event) => onOpenSubmenu(event, 'organize')}
+      >
+        {t('sidebar.organizeSidebar')}
+      </HeaderMenuItem>
+      <HeaderMenuItem
+        icon={<Clock size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+        trailing
+        onMouseEnter={(event) => onOpenSubmenu(event, 'sort')}
+        onClick={(event) => onOpenSubmenu(event, 'sort')}
+      >
+        {t('sidebar.sortCondition')}
+      </HeaderMenuItem>
+      {hiddenProjectCount > 0 && (
+        <HeaderMenuItem
+          icon={<RotateCcw size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />}
+          onClick={onRestoreHiddenProjects}
+        >
+          {t('sidebar.restoreHiddenProjects', { count: hiddenProjectCount })}
+        </HeaderMenuItem>
+      )}
+    </div>
+  )
+})
+
+function HeaderMenuItem({
+  icon,
+  children,
+  onClick,
+  onMouseEnter,
+  checked = false,
+  trailing = false,
+}: {
+  icon: React.ReactNode
+  children: React.ReactNode
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void
+  onMouseEnter?: (event: React.MouseEvent<HTMLButtonElement>) => void
+  checked?: boolean
+  trailing?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      onMouseEnter={onMouseEnter}
+      className={`flex h-8 w-full items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 text-left text-[13px] text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)] focus-visible:outline-none focus-visible:bg-[var(--color-surface-hover)] ${checked ? 'bg-[var(--color-surface-hover)]' : ''}`}
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--color-text-tertiary)]">
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {checked && <Check size={14} strokeWidth={2} className="shrink-0 text-[var(--color-brand)]" aria-hidden="true" />}
+      {trailing && !checked && (
+        <ChevronRight size={14} strokeWidth={ICON_STROKE} className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true" />
+      )}
+    </button>
+  )
+}
+
+function groupByProject(
+  sessions: SessionListItem[],
+  sortBy: SidebarProjectSortBy,
+  displayNameForProject: (projectKey: string) => string | null,
+): ProjectGroup[] {
+  const groupsByKey = new Map<string, SessionListItem[]>()
+  for (const session of sessions) {
+    const key = getSessionProjectKey(session)
+    const items = groupsByKey.get(key) ?? []
+    items.push(session)
+    groupsByKey.set(key, items)
+  }
+
+  const groups = [...groupsByKey.entries()].map(([key, items]) => {
+    const sortedSessions = [...items].sort((a, b) => compareSessionsByTimestamp(a, b, sortBy))
+    const newest = sortedSessions[0]
+    const projectRoot = newest?.projectRoot || newest?.workDir || key
+    return {
+      key,
+      title: displayNameForProject(key) || projectTitle(projectRoot),
+      subtitle: projectSubtitle(projectRoot, key),
+      workDir: projectRoot || newest?.workDir || undefined,
+      sessions: sortedSessions,
+    }
+  })
+
+  return groups.sort((a, b) => compareSessionsByTimestamp(a.sessions[0], b.sessions[0], sortBy))
+}
+
+function applyProjectOrder(
+  groups: ProjectGroup[],
+  projectOrder: string[],
+  pinnedProjectKeys: Set<string>,
+  organization: SidebarProjectOrganization,
+  sortBy: SidebarProjectSortBy,
+): ProjectGroup[] {
+  const orderIndex = new Map(projectOrder.map((key, index) => [key, index]))
+  return [...groups].sort((a, b) => {
+    const aPinned = pinnedProjectKeys.has(a.key)
+    const bPinned = pinnedProjectKeys.has(b.key)
+    if (aPinned !== bPinned) return aPinned ? -1 : 1
+    if (organization === 'project') {
+      const titleOrder = a.title.localeCompare(b.title)
+      return titleOrder || a.key.localeCompare(b.key)
+    }
+    const aIndex = orderIndex.get(a.key)
+    const bIndex = orderIndex.get(b.key)
+    if (aIndex !== undefined && bIndex !== undefined) return aIndex - bIndex
+    if (aIndex !== undefined) return -1
+    if (bIndex !== undefined) return 1
+    return compareSessionsByTimestamp(a.sessions[0], b.sessions[0], sortBy)
+  })
+}
+
+function moveProjectKey(
+  projectKeys: string[],
+  sourceKey: string,
+  targetKey: string,
+  position: 'before' | 'after',
+): string[] {
+  const withoutSource = projectKeys.filter((key) => key !== sourceKey)
+  const targetIndex = withoutSource.indexOf(targetKey)
+  if (targetIndex < 0) return projectKeys
+  const insertIndex = position === 'before' ? targetIndex : targetIndex + 1
+  return [
+    ...withoutSource.slice(0, insertIndex),
+    sourceKey,
+    ...withoutSource.slice(insertIndex),
+  ]
+}
+
+function getProjectDropPosition(event: React.DragEvent<HTMLElement>): 'before' | 'after' {
+  const rect = event.currentTarget.getBoundingClientRect()
+  return event.clientY <= rect.top + rect.height / 2 ? 'before' : 'after'
+}
+
+function normalizeProjectPathForComparison(value: string): string {
+  const normalized = value.replace(/\\/g, '/').replace(/\/+$/g, '') || value
+  return isWindows ? normalized.toLowerCase() : normalized
+}
+
+function isDriveRootComparisonPath(value: string): boolean {
+  return /^[a-z]:$/i.test(value)
+}
+
+function projectPathMatches(projectKey: string, workDir: string): boolean {
+  const normalizedProjectKey = normalizeProjectPathForComparison(projectKey)
+  const normalizedWorkDir = normalizeProjectPathForComparison(workDir)
+
+  if (normalizedProjectKey === normalizedWorkDir) return true
+  if (isDriveRootComparisonPath(normalizedProjectKey)) return false
+  return normalizedWorkDir.startsWith(`${normalizedProjectKey}/`)
+}
+
+function getVisibleProjectSessions(
+  sessions: SessionListItem[],
+  expanded: boolean,
+  activeSessionId: string | null,
+  attentionSessionIds: ReadonlySet<string>,
+): SessionListItem[] {
+  if (expanded || sessions.length <= PROJECT_GROUP_VISIBLE_COUNT) return sessions
+
+  const visible = sessions.slice(0, PROJECT_GROUP_VISIBLE_COUNT)
+  // 折叠掉的行是要人自己去翻的。当前打开的会话不该被翻到看不见，正在等人的会话
+  // 更不该：手机上没有 tab 栏，汉堡按钮上的提示点指向的就是抽屉里这一行，
+  // 折叠起来等于信号在最后一步断了。它们按列表原有顺序排在前几行之后。
+  // 只管已经加载进列表的行：侧边栏每个项目只预取最近
+  // `SIDEBAR_PROJECT_SESSION_PREVIEW_LIMIT` 条，更早的会话在列表里根本没有行，
+  // 桌面上由 tab 栏兜底，手机上要展开历史后才看得到。
+  const pinned = sessions
+    .slice(PROJECT_GROUP_VISIBLE_COUNT)
+    .filter((session) => session.id === activeSessionId || attentionSessionIds.has(session.id))
+  return pinned.length > 0 ? [...visible, ...pinned] : visible
+}
+
+function compareSessionsByTimestamp(
+  a: SessionListItem | undefined,
+  b: SessionListItem | undefined,
+  sortBy: SidebarProjectSortBy,
+): number {
+  return getSessionTimestamp(b, sortBy) - getSessionTimestamp(a, sortBy)
+}
+
+function getSessionTimestamp(session: SessionListItem | undefined, sortBy: SidebarProjectSortBy): number {
+  const value = sortBy === 'createdAt' ? session?.createdAt : session?.modifiedAt
+  const timestamp = new Date(value ?? 0).getTime()
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+async function saveProjectDisplayName(projectKey: string, displayName: string): Promise<void> {
+  const defaultDisplayName = projectTitle(projectKey).trim().replace(/\s+/g, ' ')
+  if (displayName === defaultDisplayName) {
+    await resetProjectDisplayName(projectKey)
+    return
+  }
+  if (resolveProjectDisplayName(projectKey) === displayName) return
+  await setProjectDisplayName(projectKey, displayName)
+}
+
+function projectSubtitle(projectRoot: string | null | undefined, fallbackKey: string): string | null {
+  if (!projectRoot) return fallbackKey === 'unknown' ? null : fallbackKey
+  return compactProjectPath(projectRoot)
+}
+
+function compactProjectPath(pathLike: string): string {
+  const normalized = normalizePathForCompare(pathLike)
+  const segments = normalized.split('/').filter(Boolean)
+  if (segments.length <= 3) return normalized
+  return `.../${segments.slice(-3, -1).join('/')}`
+}
+
+function domSafeProjectKey(projectKey: string): string {
+  return projectKey.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown'
+}
+
+function positionProjectMenu(clientX: number, clientY: number): React.CSSProperties {
+  if (typeof window === 'undefined') return { left: clientX, top: clientY }
+  const width = 230
+  const height = 280
+  return {
+    left: Math.max(8, Math.min(clientX, window.innerWidth - width - 8)),
+    top: Math.max(8, Math.min(clientY, window.innerHeight - height - 8)),
+  }
+}
+
+function ProjectMenuItem({
+  icon,
+  children,
+  onClick,
+  disabled = false,
+  danger = false,
+}: {
+  icon: React.ReactNode
+  children: React.ReactNode
+  onClick?: () => void
+  disabled?: boolean
+  danger?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      className={`flex h-8 w-full items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:bg-[var(--color-surface-hover)] disabled:cursor-default disabled:opacity-45 ${
+        danger
+          ? 'text-[var(--color-error)] enabled:hover:bg-[var(--color-error-container)]'
+          : 'text-[var(--color-text-primary)] enabled:hover:bg-[var(--color-surface-hover)]'
+      }`}
+    >
+      <span className={`flex h-4 w-4 shrink-0 items-center justify-center ${danger ? 'text-current' : 'text-[var(--color-text-tertiary)]'}`}>
+        {icon}
+      </span>
+      <span className="min-w-0 truncate">{children}</span>
+    </button>
+  )
+}
+
+function SessionRowMeta({
+  isRunning,
+  needsAttention,
+  isWorktree,
+  modifiedAt,
+  t,
+}: {
+  isRunning: boolean
+  needsAttention: boolean
+  isWorktree: boolean
+  modifiedAt: string
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string
+}) {
+  const relativeTime = formatRelativeTime(modifiedAt, t)
+  const updatedLabel = t('session.lastUpdated', { time: relativeTime })
+
+  return (
+    <span
+      className="ml-auto flex h-5 flex-shrink-0 items-center justify-end gap-1 whitespace-nowrap text-[11px] font-normal tabular-nums text-[var(--color-text-tertiary)]"
+      title={updatedLabel}
+    >
+      {/* 等人比在跑更要紧：停在卡片上的会话按 chatState 也算「在跑」，但转圈会
+          让人以为可以不管它。等你确认时，状态文字顶替相对时间。 */}
+      {needsAttention ? (
+        <span className="flex min-w-0 items-center gap-1 font-medium text-[var(--color-on-warning-container)]">
+          <SessionAttentionMark label={t('sidebar.sessionNeedsAttention')} />
+          {/* The mark already names the state; the words are for the eye. */}
+          <span aria-hidden="true" className="max-w-[88px] truncate">{t('sidebar.sessionStatus.attention')}</span>
+        </span>
+      ) : (
+        <>
+          {isRunning && (
+            <span
+              className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center text-[var(--color-info)]"
+              aria-label={t('sidebar.sessionRunning')}
+              title={t('sidebar.sessionRunning')}
+            >
+              {/* The wrapper already carries the name, so the mark stays silent. */}
+              <SessionRunningMark />
+            </span>
+          )}
+          {/* Only a session that really runs in its own worktree gets the
+              branch glyph; an ordinary session in its project needs no badge. */}
+          {isWorktree && (
+            <span
+              className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center"
+              title={t('sidebar.worktree')}
+            >
+              <GitBranch size={12} strokeWidth={2} aria-hidden="true" />
+              <span className="sr-only">{t('sidebar.worktree')}</span>
+            </span>
+          )}
+          <span className="flex-shrink-0">{relativeTime}</span>
+        </>
+      )}
+    </span>
+  )
+}
+
+function NavItem({
+  active,
+  collapsed,
+  label,
+  onClick,
+  icon,
+  shortcut,
+  children,
+}: {
+  active: boolean
+  collapsed: boolean
+  label: string
+  onClick: () => void
+  icon: React.ReactNode
+  /** Shown as a kbd on hover; desktop only. */
+  shortcut?: string
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      title={collapsed ? label : undefined}
+      className={`
+        sidebar-nav-item group/nav flex items-center text-[13px] transition-colors duration-150
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface-sidebar)]
+        ${collapsed ? 'h-9 w-9 justify-center rounded-[var(--radius-md)] px-0 py-0' : `w-full min-w-0 gap-2.5 rounded-[var(--radius-sm)] px-2 h-[30px]`}
+        ${active
+          ? `${SIDEBAR_ROW_RAISED} font-medium`
+          : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-sidebar-item-hover)] hover:text-[var(--color-text-primary)]'
+        }
+      `}
+    >
+      {/* Selected nav gets the brand on its glyph — the one place the
+          sidebar uses terracotta as a selection mark. */}
+      <span className={`sidebar-nav-icon flex h-4 w-4 flex-shrink-0 items-center justify-center ${active ? 'text-[var(--color-brand)]' : 'text-[var(--color-text-tertiary)]'}`}>
+        {icon}
+      </span>
+      <span className={`sidebar-copy min-w-0 flex-1 text-left ${collapsed ? 'sidebar-copy--hidden' : 'sidebar-copy--visible'}`}>
+        {children}
+      </span>
+      {shortcut && !collapsed ? (
+        <kbd className={`${KBD_CLASS} opacity-0 transition-opacity group-hover/nav:opacity-100 group-focus-visible/nav:opacity-100`}>{shortcut}</kbd>
+      ) : null}
+    </button>
+  )
+}
+
+
+function SidebarToggleIcon({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg
+      width={collapsed ? 16 : 14}
+      height={collapsed ? 16 : 14}
+      viewBox="0 0 14 14"
+      fill="none"
+      className={`sidebar-toggle-icon ${collapsed ? 'sidebar-toggle-icon--collapsed' : 'sidebar-toggle-icon--open'}`}
+      aria-hidden="true"
+    >
+      <path
+        d={collapsed ? 'M5 3 9 7l-4 4' : 'M9 3 5 7l4 4'}
+        className="sidebar-toggle-chevron"
+      />
+    </svg>
+  )
+}

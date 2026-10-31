@@ -1,0 +1,619 @@
+import { create } from 'zustand'
+import { sessionsApi } from '../api/sessions'
+import { ApiError } from '../api/client'
+import { dropSession as dropVirtualHeightSession } from '../components/chat/virtualHeightCache'
+import { destroyTerminalRuntime } from '../lib/terminalRuntime'
+import { useSessionRuntimeStore } from './sessionRuntimeStore'
+import { t } from '../i18n'
+import { teamMemberSessionId } from '../types/team'
+import { readTabBehavior } from '../lib/tabBehavior'
+import { isDesktopRuntime } from '../lib/desktopRuntime'
+import { STAR_OPEN_SETTINGS_EVENT } from '../lib/starSettingsEvent'
+
+const TAB_STORAGE_KEY = 'cc-haha-open-tabs'
+const MAX_CLOSED_SESSION_TABS = 10
+// Session ids are never reused, so a deleted one can be kept out of the closed
+// list for the life of the page. Delete flows close the tab after deleting.
+const deletedSessionIds = new Set<string>()
+
+export const SETTINGS_TAB_ID = '__settings__'
+/** Settings open as a global modal (see StarSettingsModal); openTab(SETTINGS_TAB_ID) dispatches this. */
+export { STAR_OPEN_SETTINGS_EVENT }
+/** Tab id prefix of the STAR pages (plugins, PPT, 3D, projects, ...). */
+export const STAR_PAGE_TAB_PREFIX = '__star_page__'
+export const SCHEDULED_TAB_ID = '__scheduled__'
+export const CONNECTORS_TAB_ID = '__connectors__'
+export const MARKET_TAB_ID = '__market__'
+export const TERMINAL_TAB_PREFIX = '__terminal__'
+export const WORKBENCH_TAB_PREFIX = '__workbench__'
+export const SUBAGENT_TAB_PREFIX = '__subagent__'
+export const TEAM_TAB_PREFIX = '__team__'
+export const TEAM_MEMBER_TAB_PREFIX = 'team-member:'
+
+export type TabType = 'session' | 'settings' | 'scheduled' | 'connectors' | 'market' | 'terminal' | 'workbench' | 'subagent' | 'team' | 'team-member'
+  // STAR pages (创作 / 资料库 / 手机助手). Memory only: never written to tab storage.
+  | 'star-studio' | 'star-library' | 'star-phone' | 'star-page'
+type PersistentSpecialTabType = 'settings' | 'scheduled' | 'connectors' | 'market'
+
+// Retired tab shapes that older builds persisted. `persistenceMigrations`
+// rewrites them at startup; restoreTabs tolerates them as a second guard.
+const LEGACY_TRACE_LIST_TAB_ID = '__traces__'
+const LEGACY_TRACE_TAB_PREFIX = '__trace__'
+
+export type Tab = {
+  sessionId: string
+  title: string
+  type: TabType
+  status: 'idle' | 'running' | 'error'
+  terminalCwd?: string
+  terminalRuntimeId?: string
+  workbenchSessionId?: string
+  sourceSessionId?: string
+  sourceTurnKey?: string
+  sourceElementId?: string
+  subagentToolUseId?: string
+  subagentTaskId?: string
+  teamLeadSessionId?: string
+  teamMemberAgentId?: string
+  teamIncarnationId?: string
+  returnTabId?: string
+  /** STAR page id of a 'star-page' tab. */
+  pageId?: string
+}
+
+type PersistedTab = {
+  sessionId: string
+  title: string
+  // Typed as string: old builds also persisted the retired 'trace'/'traces'.
+  type?: string
+  traceSessionId?: string
+}
+
+export type ClosedSessionTab = {
+  sessionId: string
+  title: string
+}
+
+type TabPersistence = {
+  openTabs: PersistedTab[]
+  activeTabId: string | null
+}
+
+type TabStore = {
+  tabs: Tab[]
+  activeTabId: string | null
+  /** Chat tabs closed in this run, newest last. Kept in memory only. */
+  closedSessionTabs: ClosedSessionTab[]
+
+  openTab: (sessionId: string, title: string, type?: TabType) => void
+  openTerminalTab: (cwd?: string, terminalRuntimeId?: string) => string
+  openSubagentTab: (
+    sourceSessionId: string,
+    toolUseId: string,
+    title?: string,
+    taskId?: string,
+    returnTabId?: string,
+  ) => string
+  returnFromSubagent: (tabId: string) => void
+  openTeamWorkbenchTab: (leadSessionId: string, title?: string) => string
+  returnFromTeamWorkbench: (tabId: string) => void
+  openTeamMemberTab: (
+    leadSessionId: string,
+    agentId: string,
+    title?: string,
+    returnTabId?: string,
+    incarnationId?: string,
+  ) => string
+  returnFromTeamMember: (tabId: string) => void
+  closeTab: (sessionId: string) => void
+  setActiveTab: (sessionId: string | null) => void
+  updateTabTitle: (sessionId: string, title: string) => void
+  updateTabStatus: (sessionId: string, status: Tab['status']) => void
+  replaceTabSession: (oldSessionId: string, newSessionId: string) => void
+  moveTab: (fromIndex: number, toIndex: number) => void
+  takeClosedSessionTab: () => ClosedSessionTab | null
+  rememberClosedSessionTab: (tab: ClosedSessionTab) => void
+  /** Deleted sessions have nothing left to reopen, now or when their tab closes later. */
+  markSessionsDeleted: (sessionIds: string[]) => void
+
+  saveTabs: () => void
+  restoreTabs: () => Promise<void>
+}
+
+const PERSISTENT_SPECIAL_TAB_IDS: Record<PersistentSpecialTabType, string> = {
+  settings: SETTINGS_TAB_ID,
+  scheduled: SCHEDULED_TAB_ID,
+  market: MARKET_TAB_ID,
+  connectors: CONNECTORS_TAB_ID,
+}
+
+function getPersistentSpecialTabType(tab: { sessionId: string; type?: string }): PersistentSpecialTabType | null {
+  if (tab.sessionId === SETTINGS_TAB_ID) return 'settings'
+  if (tab.sessionId === SCHEDULED_TAB_ID) return 'scheduled'
+  if (tab.sessionId === CONNECTORS_TAB_ID) return 'market'
+  if (tab.sessionId === MARKET_TAB_ID) return 'market'
+  if (tab.type === 'connectors' || tab.type === 'settings' || tab.type === 'scheduled' || tab.type === 'market') {
+    return tab.type === 'connectors' ? 'market' : tab.type
+  }
+  return null
+}
+
+/**
+ * Rewrites the retired Trace tabs: the list tab is dropped and a per-session
+ * trace tab becomes that session's chat tab (where the 轨迹 view now lives).
+ */
+function normalizeLegacyPersistedTab(tab: PersistedTab): PersistedTab | null {
+  if (tab.sessionId === LEGACY_TRACE_LIST_TAB_ID || tab.type === 'traces') return null
+  if (tab.type === 'trace' || tab.sessionId.startsWith(LEGACY_TRACE_TAB_PREFIX)) {
+    const sessionId = tab.traceSessionId || tab.sessionId.slice(LEGACY_TRACE_TAB_PREFIX.length)
+    return sessionId && !sessionId.startsWith(LEGACY_TRACE_TAB_PREFIX)
+      ? { sessionId, title: tab.title, type: 'session' }
+      : null
+  }
+  return tab
+}
+
+function normalizeLegacyActiveTabId(activeTabId: string | null | undefined): string | null {
+  if (!activeTabId || activeTabId === LEGACY_TRACE_LIST_TAB_ID) return null
+  if (activeTabId.startsWith(LEGACY_TRACE_TAB_PREFIX)) {
+    return activeTabId.slice(LEGACY_TRACE_TAB_PREFIX.length) || null
+  }
+  return activeTabId
+}
+
+function getPersistedSessionId(tab: PersistedTab): string | null {
+  if (getPersistentSpecialTabType(tab)) return null
+  if (
+    tab.type === 'terminal' || tab.type === 'workbench' || tab.type === 'subagent' ||
+    tab.type === 'team' || tab.type === 'team-member'
+  ) return null
+  return tab.sessionId
+}
+
+export const useTabStore = create<TabStore>((set, get) => ({
+  tabs: [],
+  activeTabId: null,
+  closedSessionTabs: [],
+
+  openTab: (sessionId, title, type) => {
+    if (sessionId === CONNECTORS_TAB_ID || type === 'connectors') { sessionId = MARKET_TAB_ID; type = 'market' }
+    if ((sessionId === SETTINGS_TAB_ID || type === 'settings') && isDesktopRuntime()) {
+      // Settings are a modal now. Callers keep using openTab + setPendingSettingsTab.
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(STAR_OPEN_SETTINGS_EVENT))
+      return
+    }
+    if (sessionId.startsWith(STAR_PAGE_TAB_PREFIX)) type = 'star-page'
+    const { tabs } = get()
+    const existing = tabs.find((t) => t.sessionId === sessionId)
+    if (existing) {
+      set({
+        tabs: tabs.map((tab) =>
+          tab.sessionId === sessionId
+            ? {
+                ...tab,
+                title,
+                type: type ?? tab.type ?? 'session',
+              }
+            : tab,
+        ),
+        activeTabId: sessionId,
+      })
+    } else {
+      set({
+        tabs: [...tabs, {
+          sessionId,
+          title,
+          type: type ?? 'session',
+          status: 'idle',
+          ...(sessionId.startsWith(STAR_PAGE_TAB_PREFIX) ? { pageId: sessionId.slice(STAR_PAGE_TAB_PREFIX.length) } : {}),
+        }],
+        activeTabId: sessionId,
+      })
+    }
+    get().saveTabs()
+  },
+
+  openTerminalTab: (cwd, terminalRuntimeId) => {
+    const { tabs } = get()
+    const nextIndex = Math.max(
+      0,
+      ...tabs
+        .filter((tab) => tab.type === 'terminal')
+        .map((tab) => {
+          const match = /^Terminal (\d+)$/.exec(tab.title)
+          return match ? Number(match[1]) : 0
+        }),
+    ) + 1
+    const sessionId = `${TERMINAL_TAB_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    set({
+      tabs: [...tabs, { sessionId, title: `Terminal ${nextIndex}`, type: 'terminal', status: 'idle', terminalCwd: cwd, terminalRuntimeId }],
+      activeTabId: sessionId,
+    })
+    get().saveTabs()
+    return sessionId
+  },
+
+  openSubagentTab: (sourceSessionId, toolUseId, title = 'SubAgent', taskId, returnTabId) => {
+    const tabId = `${SUBAGENT_TAB_PREFIX}${sourceSessionId}__${toolUseId}`
+    const { tabs } = get()
+    const existing = tabs.find((tab) => tab.sessionId === tabId)
+    const tab: Tab = {
+      sessionId: tabId,
+      title,
+      type: 'subagent',
+      status: 'idle',
+      sourceSessionId,
+      subagentToolUseId: toolUseId,
+      ...(taskId ? { subagentTaskId: taskId } : {}),
+      ...(returnTabId ? { returnTabId } : {}),
+    }
+
+    set({
+      tabs: existing
+        ? tabs.map((current) => current.sessionId === tabId ? tab : current)
+        : [...tabs, tab],
+      activeTabId: tabId,
+    })
+    get().saveTabs()
+    return tabId
+  },
+
+  returnFromSubagent: (tabId) => {
+    const tab = get().tabs.find((current) => current.sessionId === tabId)
+    if (tab?.type !== 'subagent') return
+
+    const returnTabId = tab.returnTabId ?? tab.sourceSessionId
+    if (returnTabId && get().tabs.some((current) => current.sessionId === returnTabId)) {
+      get().setActiveTab(returnTabId)
+    }
+    get().closeTab(tabId)
+  },
+
+  openTeamWorkbenchTab: (leadSessionId, title = t('agentTeams.name')) => {
+    const tabId = `${TEAM_TAB_PREFIX}${leadSessionId}`
+    const { tabs } = get()
+    const tab: Tab = {
+      sessionId: tabId,
+      title,
+      type: 'team',
+      status: 'idle',
+      teamLeadSessionId: leadSessionId,
+      sourceSessionId: leadSessionId,
+    }
+
+    set({
+      tabs: tabs.some((current) => current.sessionId === tabId)
+        ? tabs.map((current) => current.sessionId === tabId ? tab : current)
+        : [...tabs, tab],
+      activeTabId: tabId,
+    })
+    get().saveTabs()
+    return tabId
+  },
+
+  returnFromTeamWorkbench: (tabId) => {
+    const tab = get().tabs.find((current) => current.sessionId === tabId)
+    if (tab?.type !== 'team') return
+
+    if (tab.sourceSessionId && get().tabs.some((current) => current.sessionId === tab.sourceSessionId)) {
+      get().setActiveTab(tab.sourceSessionId)
+    }
+    get().closeTab(tabId)
+  },
+
+  openTeamMemberTab: (leadSessionId, agentId, title = 'Agent', returnTabId, incarnationId) => {
+    const tabId = teamMemberSessionId(agentId, incarnationId)
+    const { tabs, activeTabId } = get()
+    const resolvedReturnTabId = returnTabId ?? (
+      activeTabId && tabs.some((tab) => tab.sessionId === activeTabId && tab.type === 'team')
+        ? activeTabId
+        : `${TEAM_TAB_PREFIX}${leadSessionId}`
+    )
+    const tab: Tab = {
+      sessionId: tabId,
+      title,
+      type: 'team-member',
+      status: 'idle',
+      sourceSessionId: leadSessionId,
+      teamLeadSessionId: leadSessionId,
+      teamMemberAgentId: agentId,
+      teamIncarnationId: incarnationId,
+      returnTabId: resolvedReturnTabId,
+    }
+
+    set({
+      tabs: tabs.some((current) => current.sessionId === tabId)
+        ? tabs.map((current) => current.sessionId === tabId ? tab : current)
+        : [...tabs, tab],
+      activeTabId: tabId,
+    })
+    get().saveTabs()
+    return tabId
+  },
+
+  returnFromTeamMember: (tabId) => {
+    const tab = get().tabs.find((current) => current.sessionId === tabId)
+    if (tab?.type !== 'team-member') return
+
+    const returnTabId = tab.returnTabId
+    if (returnTabId && get().tabs.some((current) => current.sessionId === returnTabId)) {
+      get().setActiveTab(returnTabId)
+    } else if (tab.teamLeadSessionId) {
+      get().openTeamWorkbenchTab(tab.teamLeadSessionId)
+    }
+    get().closeTab(tabId)
+  },
+
+  closeTab: (sessionId) => {
+    const { tabs, activeTabId } = get()
+    const index = tabs.findIndex((t) => t.sessionId === sessionId)
+    if (index < 0) return
+
+    const newTabs = tabs.filter((t) => t.sessionId !== sessionId)
+    let newActiveId = activeTabId
+
+    if (activeTabId === sessionId) {
+      if (newTabs.length === 0) {
+        newActiveId = null
+      } else if (index >= newTabs.length) {
+        newActiveId = newTabs[newTabs.length - 1]!.sessionId
+      } else {
+        newActiveId = newTabs[index]!.sessionId
+      }
+    }
+
+    set({ tabs: newTabs, activeTabId: newActiveId })
+    get().saveTabs()
+    const closedTab = tabs[index]
+    if (closedTab?.type === 'session') {
+      get().rememberClosedSessionTab({ sessionId: closedTab.sessionId, title: closedTab.title })
+    }
+    if (closedTab?.type === 'terminal') {
+      destroyTerminalRuntime(closedTab.terminalRuntimeId ?? closedTab.sessionId)
+    }
+    dropVirtualHeightSession(sessionId)
+  },
+
+  setActiveTab: (sessionId) => {
+    set({ activeTabId: sessionId })
+    get().saveTabs()
+  },
+
+  updateTabTitle: (sessionId, title) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.sessionId === sessionId ? { ...t, title } : t)),
+    }))
+    get().saveTabs()
+  },
+
+  updateTabStatus: (sessionId, status) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.sessionId === sessionId ? { ...t, status } : t)),
+    }))
+  },
+
+  replaceTabSession: (oldSessionId, newSessionId) => {
+    const { activeTabId } = get()
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.sessionId === oldSessionId ? { ...t, sessionId: newSessionId } : t,
+      ),
+      activeTabId: activeTabId === oldSessionId ? newSessionId : activeTabId,
+    }))
+    get().saveTabs()
+  },
+
+  moveTab: (fromIndex, toIndex) => {
+    if (fromIndex === toIndex) return
+    const { tabs } = get()
+    if (fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) return
+    const newTabs = [...tabs]
+    const [moved] = newTabs.splice(fromIndex, 1)
+    newTabs.splice(toIndex, 0, moved!)
+    set({ tabs: newTabs })
+    get().saveTabs()
+  },
+
+  takeClosedSessionTab: () => {
+    const { closedSessionTabs } = get()
+    const last = closedSessionTabs[closedSessionTabs.length - 1]
+    if (!last) return null
+    set({ closedSessionTabs: closedSessionTabs.slice(0, -1) })
+    return last
+  },
+
+  rememberClosedSessionTab: (tab) => {
+    if (deletedSessionIds.has(tab.sessionId)) return
+    set((s) => ({
+      closedSessionTabs: [
+        ...s.closedSessionTabs.filter((closed) => closed.sessionId !== tab.sessionId),
+        tab,
+      ].slice(-MAX_CLOSED_SESSION_TABS),
+    }))
+  },
+
+  markSessionsDeleted: (sessionIds) => {
+    for (const sessionId of sessionIds) deletedSessionIds.add(sessionId)
+    const { closedSessionTabs } = get()
+    if (!closedSessionTabs.some((tab) => deletedSessionIds.has(tab.sessionId))) return
+    set({ closedSessionTabs: closedSessionTabs.filter((tab) => !deletedSessionIds.has(tab.sessionId)) })
+  },
+
+  saveTabs: () => {
+    const { tabs, activeTabId } = get()
+    const persistableTabs = tabs.filter((tab) => (
+      tab.type !== 'terminal' &&
+      tab.type !== 'workbench' &&
+      tab.type !== 'subagent' &&
+      tab.type !== 'team' &&
+      tab.type !== 'team-member' &&
+      tab.type !== 'star-studio' &&
+      tab.type !== 'star-library' &&
+      tab.type !== 'star-phone' &&
+      tab.type !== 'star-page' &&
+      // Desktop settings are a modal, so a settings tab is never worth restoring there.
+      !(tab.type === 'settings' && isDesktopRuntime())
+    ))
+    const activeTab = tabs.find((tab) => tab.sessionId === activeTabId)
+    // Detached views (workbench, team) restore to the session they were spun
+    // out of rather than to a stale synthetic tab id.
+    const detachedOrigin = (
+      activeTab?.type === 'workbench' ||
+      activeTab?.type === 'team' ||
+      activeTab?.type === 'team-member'
+    )
+      ? activeTab.sourceSessionId
+      : undefined
+    const persistedActiveTabId = activeTabId && persistableTabs.some((tab) => tab.sessionId === activeTabId)
+      ? activeTabId
+      : detachedOrigin && persistableTabs.some((tab) => tab.sessionId === detachedOrigin)
+        ? detachedOrigin
+        : (persistableTabs[0]?.sessionId ?? null)
+    const data: TabPersistence = {
+      openTabs: persistableTabs.map((t) => ({
+        sessionId: t.sessionId,
+        title: t.title,
+        type: t.type,
+      })),
+      activeTabId: persistedActiveTabId,
+    }
+    try {
+      localStorage.setItem(TAB_STORAGE_KEY, JSON.stringify(data))
+    } catch { /* noop */ }
+  },
+
+  restoreTabs: async () => {
+    try {
+      const restoreStartedWith = get()
+      const runtimeSelections = useSessionRuntimeStore.getState().selections
+      const restoreStillCurrent = () => {
+        const current = get()
+        return current.tabs === restoreStartedWith.tabs &&
+          current.activeTabId === restoreStartedWith.activeTabId
+      }
+      // Opting out of restore leaves the saved tabs in place, so turning it
+      // back on brings back the tabs of the last run rather than nothing.
+      if (!readTabBehavior().restoreOnLaunch) return
+      const raw = localStorage.getItem(TAB_STORAGE_KEY)
+      if (!raw) return
+
+      const parsed = JSON.parse(raw) as TabPersistence
+      const data: TabPersistence = {
+        openTabs: Array.isArray(parsed.openTabs)
+          ? parsed.openTabs.flatMap((tab) => {
+              const normalized = normalizeLegacyPersistedTab(tab)
+              return normalized ? [normalized] : []
+            })
+          : [],
+        activeTabId: normalizeLegacyActiveTabId(parsed.activeTabId),
+      }
+      if (data.openTabs.length === 0) {
+        set({ tabs: [], activeTabId: null })
+        localStorage.removeItem(TAB_STORAGE_KEY)
+        return
+      }
+
+      const { sessions } = await sessionsApi.list({ limit: 200 })
+      if (!restoreStillCurrent()) return
+      const sessionsById = new Map(sessions.map((session) => [session.id, session]))
+      const missingIds = new Set<string>()
+      // The recent page cannot prove an old saved tab was deleted. Resolve
+      // only missing saved ids, sequentially so large tab sets stay bounded.
+      for (const tab of data.openTabs) {
+        const sessionId = getPersistedSessionId(tab)
+        if (!sessionId || sessionsById.has(sessionId) || missingIds.has(sessionId)) continue
+        try {
+          const session = await sessionsApi.getSummary(sessionId)
+          if (!restoreStillCurrent()) return
+          sessionsById.set(sessionId, session)
+        } catch (error) {
+          if (!restoreStillCurrent()) return
+          if (error instanceof ApiError && error.status === 404) {
+            missingIds.add(sessionId)
+          } else {
+            // Keep persisted tabs intact on a timeout or unavailable server.
+            throw error
+          }
+        }
+      }
+
+      // Avoid the sessionStore -> tabStore static import cycle. There must
+      // be no await between reconciliation and activating the restored tabs.
+      const { useSessionStore, reconcileSessionSnapshots } = await import('./sessionStore')
+      if (!restoreStillCurrent()) return
+      const recentSessions = reconcileSessionSnapshots(sessions, useSessionStore.getState().sessions)
+      for (const session of recentSessions) sessionsById.set(session.id, session)
+      const restoredSessionIds = new Set(data.openTabs.flatMap((tab) => {
+        const id = getPersistedSessionId(tab)
+        return id ? [id] : []
+      }))
+      // A saved tab can be in this recent page but outside the sidebar's six
+      // rows. Every restored chat needs metadata before activation and must
+      // retain it across sidebar refreshes; unrelated recent rows stay bounded.
+      const restoredSessions = [...restoredSessionIds].flatMap((id) => {
+        const session = sessionsById.get(id)
+        return session ? [session] : []
+      })
+      const hydrated = useSessionStore.getState().hydrateHistoricalSessions(restoredSessions, runtimeSelections)
+      for (const session of hydrated) sessionsById.set(session.id, session)
+      useSessionRuntimeStore.getState().syncFromSessions(recentSessions, runtimeSelections)
+
+      const validTabs: Tab[] = data.openTabs
+        .filter((t) => {
+          // Desktop settings moved into a modal; older builds persisted a settings tab.
+          if (getPersistentSpecialTabType(t) === 'settings' && isDesktopRuntime()) return false
+          // Special tabs are always valid
+          if (getPersistentSpecialTabType(t)) return true
+          const sessionId = getPersistedSessionId(t)
+          return sessionId !== null && sessionsById.has(sessionId)
+        })
+        .map((t) => {
+          const specialType = getPersistentSpecialTabType(t)
+          if (specialType) {
+            return { sessionId: PERSISTENT_SPECIAL_TAB_IDS[specialType], title: t.title, type: specialType, status: 'idle' as const }
+          }
+          return {
+            sessionId: t.sessionId,
+            title: sessionsById.get(t.sessionId)?.title || t.title,
+            type: 'session' as const,
+            status: 'idle' as const,
+          }
+        })
+
+      const uniqueTabs = validTabs.filter((tab, index) => validTabs.findIndex(other => other.sessionId === tab.sessionId) === index)
+      if (uniqueTabs.length === 0) {
+        set({ tabs: [], activeTabId: null })
+        localStorage.removeItem(TAB_STORAGE_KEY)
+        return
+      }
+
+      const legacyActive = data.openTabs.find(tab => tab.sessionId === data.activeTabId)
+      const activeType = legacyActive && getPersistentSpecialTabType(legacyActive)
+      const normalizedActive = activeType ? PERSISTENT_SPECIAL_TAB_IDS[activeType] : data.activeTabId
+      const activeId = normalizedActive && uniqueTabs.some(tab => tab.sessionId === normalizedActive) ? normalizedActive : uniqueTabs[0]!.sessionId
+
+      set({ tabs: uniqueTabs, activeTabId: activeId })
+    } catch { /* noop */ }
+  },
+}))
+
+// When each open tab was last on screen in this run. Kept beside the store for
+// the life of the page, so anything reading it (the tab limit) can come and go
+// without losing the order, and pruned as tabs close.
+let viewClock = 0
+const lastViewedAt = new Map<string, number>()
+useTabStore.subscribe((state, previous) => {
+  if (state.activeTabId && state.activeTabId !== previous.activeTabId) {
+    lastViewedAt.set(state.activeTabId, ++viewClock)
+  }
+  if (state.tabs === previous.tabs) return
+  const openIds = new Set(state.tabs.map((tab) => tab.sessionId))
+  for (const tabId of lastViewedAt.keys()) {
+    if (!openIds.has(tabId)) lastViewedAt.delete(tabId)
+  }
+})
+
+/** Larger is more recent; 0 for a tab not shown since the page loaded. */
+export function getTabLastViewed(tabId: string): number {
+  return lastViewedAt.get(tabId) ?? 0
+}

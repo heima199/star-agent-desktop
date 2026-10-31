@@ -1,0 +1,131 @@
+import { describe, expect, test } from 'bun:test'
+import { seedDesktopUiTeamPlan } from './team-plan'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  DESKTOP_UI_SMOKE_ALLOW_SELECTOR,
+  DESKTOP_UI_SMOKE_ATTENTION_PROBE,
+  DESKTOP_UI_SMOKE_ATTENTION_TAB,
+  DESKTOP_UI_SMOKE_LOCALE,
+  buildDesktopUiSmokeBootstrap,
+  buildDesktopUiSmokePrompt,
+  describeDesktopUiSmokePrerequisites,
+  seedDesktopUiSmokeProvider,
+} from './deterministic'
+
+describe('deterministic desktop UI smoke setup', () => {
+  test('pins the locale so the approval button label is stable for every contributor', () => {
+    const bootstrap = buildDesktopUiSmokeBootstrap('session-1')
+
+    expect(bootstrap).toContain(`localStorage.setItem('cc-haha-locale', "${DESKTOP_UI_SMOKE_LOCALE}")`)
+    expect(bootstrap).toContain('cc-haha-open-tabs')
+    expect(bootstrap).toContain('session-1')
+    // No per-session runtime is pinned: the lane uses its isolated active provider.
+    expect(bootstrap).toContain("localStorage.removeItem('cc-haha-session-runtime')")
+  })
+
+  test('matches the approval button the desktop actually renders', () => {
+    const dialog = readFileSync('desktop/src/components/chat/PermissionDialog.tsx', 'utf8')
+    const english = readFileSync('desktop/src/i18n/locales/en.ts', 'utf8')
+
+    // The selector is derived from the production aria-label and the pinned locale;
+    // if either changes, this test fails before the lane starts timing out.
+    expect(dialog).toContain("aria-label={`${t('permission.allow')}: ${permissionContext}`}")
+    expect(english).toContain("'permission.allow': 'Allow'")
+    expect(DESKTOP_UI_SMOKE_ALLOW_SELECTOR).toBe('button[aria-label^="Allow: "]')
+  })
+
+  test('matches the waiting-tab marker the desktop actually renders', () => {
+    const tabBar = readFileSync('desktop/src/components/layout/TabBar.tsx', 'utf8')
+    const mark = readFileSync('desktop/src/components/layout/SessionAttentionMark.tsx', 'utf8')
+    const english = readFileSync('desktop/src/i18n/locales/en.ts', 'utf8')
+
+    // Same idea as the approval button above: the selectors are derived from the
+    // production markup, so a rename fails here before the lane times out waiting.
+    expect(tabBar).toContain('data-testid="tab-bar"')
+    expect(tabBar).toContain("data-attention={needsAttention ? 'true' : 'false'}")
+    expect(mark).toContain('role="img"')
+    expect(english).toContain("'tabs.sessionRunning': 'Session running'")
+    expect(DESKTOP_UI_SMOKE_ATTENTION_TAB).toBe('[data-testid="tab-bar"] [data-attention="true"]')
+    expect(DESKTOP_UI_SMOKE_ATTENTION_PROBE).toContain(DESKTOP_UI_SMOKE_ATTENTION_TAB)
+    expect(DESKTOP_UI_SMOKE_ATTENTION_PROBE).toContain('[role="img"]')
+    // The probe must also reject a tab that carries the running dot.
+    expect(DESKTOP_UI_SMOKE_ATTENTION_PROBE).toContain('!tab.querySelector(\'[aria-label="Session running"]\')')
+  })
+
+  test('asks the mock runtime to write inside the fixture copy only', () => {
+    const projectDir = '/tmp/fixture-copy'
+    const { target, prompt } = buildDesktopUiSmokePrompt(projectDir)
+
+    expect(target).toBe(join(projectDir, 'ui-smoke-output.txt'))
+    expect(prompt.startsWith('MOCK_TOOL ')).toBe(true)
+    const payload = JSON.parse(prompt.slice('MOCK_TOOL '.length))
+    expect(payload.tool).toBe('Write')
+    expect(payload.write.path).toBe(target)
+    expect(payload.write.content).toBe('written-through-the-desktop-ui')
+  })
+
+  test('seeds only fake providers inside the sandbox', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'cc-haha-ui-smoke-provider-'))
+    try {
+      seedDesktopUiSmokeProvider(configDir)
+      const index = JSON.parse(readFileSync(join(configDir, 'cc-haha', 'providers.json'), 'utf8'))
+      expect(index.activeId).toBe('desktop-ui-smoke-provider')
+      expect(index.providers).toHaveLength(2)
+      expect(index.providers[0]).toMatchObject({
+        apiKey: 'desktop-ui-smoke-fake-key',
+        baseUrl: 'http://127.0.0.1:1',
+      })
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  test('seeds a pending plan with no child workers before browser approval', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'cc-haha-team-review-smoke-'))
+    try {
+      const plan = seedDesktopUiTeamPlan(configDir, 'leader-session', '/tmp/disposable-project')
+      const config = JSON.parse(readFileSync(join(configDir, 'teams', plan.teamName, 'config.json'), 'utf8'))
+      expect(plan.state).toBe('review_pending')
+      expect(plan.approvedSnapshot).toBeUndefined()
+      expect(plan.members).toHaveLength(2)
+      expect(config.members.map((member: { name: string }) => member.name)).toEqual(['team-lead'])
+      expect(plan.tasks.every(task => plan.members.some(member => member.id === task.ownerId))).toBe(true)
+      expect(JSON.parse(readFileSync(join(configDir, 'teams', plan.teamName, 'plan.json'), 'utf8'))).toEqual(plan)
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  test('skips with an actionable reason instead of failing when prerequisites are missing', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'cc-haha-ui-smoke-prereq-'))
+    try {
+      expect(describeDesktopUiSmokePrerequisites(empty)).toContain('desktop dependencies')
+    } finally {
+      rmSync(empty, { recursive: true, force: true })
+    }
+  })
+
+  test('runs the real UI against the mock runtime with a sandboxed config dir', () => {
+    const source = readFileSync('scripts/quality-gate/desktop-smoke/deterministic.ts', 'utf8')
+
+    expect(source).toContain('src/server/__tests__/fixtures/mock-sdk-cli.ts')
+    expect(source).toContain('CLAUDE_CLI_PATH')
+    expect(source).toContain('seedProviders: false')
+    expect(source).toContain('seedDesktopUiSmokeProvider(sandbox.configDir)')
+    expect(source).toContain('...sandbox.env')
+    expect(source).toContain('applyUserStateGuard')
+    // The lane must answer the permission through the UI. Flipping the global
+    // permission mode is what made the old smoke both unsafe and blind to the
+    // approval screen.
+    expect(source).toContain(DESKTOP_UI_SMOKE_ALLOW_SELECTOR)
+    expect(source).toContain("['type', DESKTOP_SMOKE_COMPOSER_SELECTOR, prompt]")
+    expect(source).toContain("['click', DESKTOP_SMOKE_RUN_SELECTOR]")
+    // No global permission-mode switch: the old smoke PUT bypassPermissions on the
+    // settings API, which both skipped the approval screen and mutated user state.
+    expect(source).not.toContain('/api/permissions/mode')
+    expect(source).not.toContain('setPermissionMode')
+    expect(source).toContain('before the permission dialog was answered')
+  })
+})

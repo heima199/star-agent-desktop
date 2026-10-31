@@ -1,0 +1,290 @@
+/* Full-screen STAR sign-in (StarLoginScreen.tsx). The logo card drifts three
+   soft blobs behind the logo: transform-only animation on the compositor,
+   paused while the window is hidden (.is-still) and off under reduced motion.
+   The blobs are the theme's text color at low opacity, so the card reads the
+   same in every theme without a raw color. */
+.star-login-blob {
+  position: absolute;
+  left: -22%;
+  top: -18%;
+  width: 80%;
+  height: 70%;
+  background: radial-gradient(closest-side, var(--color-text-primary), transparent);
+  opacity: 0.12;
+  will-change: transform;
+  animation: star-login-drift-a 26s ease-in-out infinite alternate;
+}
+
+.star-login-blob--b {
+  left: auto;
+  top: auto;
+  right: -24%;
+  bottom: -16%;
+  width: 75%;
+  height: 65%;
+  opacity: 0.09;
+  animation-name: star-login-drift-b;
+  animation-duration: 34s;
+}
+
+.star-login-blob--c {
+  left: 22%;
+  top: 30%;
+  width: 60%;
+  height: 50%;
+  opacity: 0.07;
+  animation-name: star-login-drift-c;
+  animation-duration: 42s;
+}
+
+.star-login-card.is-still .star-login-blob {
+  animation-play-state: paused;
+}
+
+@keyframes star-login-drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(34%, 26%, 0) scale(1.15); }
+}
+
+@keyframes star-login-drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.1); }
+  to { transform: translate3d(-32%, -30%, 0) scale(0.9); }
+}
+
+@keyframes star-login-drift-c {
+  from { transform: translate3d(-24%, 18%, 0) scale(0.9); }
+  to { transform: translate3d(22%, -26%, 0) scale(1.2); }
+}
+
+/* The glass star is vector, so it stays sharp at any size, and is shown whole
+   (no fade at the bottom, which was for the mascot's feet). */
+.star-login-logo {
+  width: clamp(180px, 40vmin, 320px);
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+}
+
+/* Pressed 登录 without ticking the agreement: the box shakes twice. */
+.star-login-nudge {
+  animation: star-login-nudge 0.4s ease-in-out 2;
+}
+
+@keyframes star-login-nudge {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .star-login-blob,
+  .star-login-nudge {
+    animation: none;
+  }
+}
+
+/* A published 用户协议 / 隐私政策: plain document typography inside the dialog
+   (the reset strips headings, lists and spacing). CJK gets no italics. */
+.star-legal-body {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.star-legal-body > * + * {
+  margin-top: 0.75em;
+}
+
+.star-legal-body h1,
+.star-legal-body h2 {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.5;
+  margin-top: 1.25em;
+}
+
+.star-legal-body h3,
+.star-legal-body h4,
+.star-legal-body h5,
+.star-legal-body h6 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 1em;
+}
+
+.star-legal-body > :first-child {
+  margin-top: 0;
+}
+
+.star-legal-body ul,
+.star-legal-body ol {
+  padding-left: 1.5em;
+}
+
+.star-legal-body ul {
+  list-style: disc;
+}
+
+.star-legal-body ol {
+  list-style: decimal;
+}
+
+.star-legal-body li + li {
+  margin-top: 0.25em;
+}
+
+.star-legal-body strong,
+.star-legal-body b {
+  font-weight: 600;
+}
+
+.star-legal-body em,
+.star-legal-body i {
+  font-style: normal;
+}
+
+.star-legal-body blockquote {
+  padding-left: 12px;
+  border-left: 2px solid var(--color-border);
+  color: var(--color-text-secondary);
+}
+
+.star-legal-body hr {
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.star-legal-body table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.star-legal-body th,
+.star-legal-body td {
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.star-legal-body pre,
+.star-legal-body code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.star-legal-body pre {
+  white-space: pre-wrap;
+}
+
+/* The screen itself covers the whole window (dialog layer: the legal dialog,
+   a later Modal, opens above it; toasts stay on top). The 40px strip on top
+   is a drag region with the window controls, so a frameless window can still
+   be moved, minimized or closed while it is open. */
+.star-login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+.star-login-titlebar {
+  flex: 0 0 40px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+  min-width: 0;
+}
+
+/* Two equal halves; content taller than the window scrolls inside. */
+.star-login-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  padding: 0 16px 16px;
+  overflow: auto;
+}
+
+.star-login-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 32px 36px 36px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3xl);
+  background: var(--color-surface-container-low);
+}
+
+.star-login-flow {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.star-login-art {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0 24px;
+}
+
+.star-login-main {
+  display: flex;
+  min-width: 0;
+  padding: 24px;
+}
+
+/* margin: auto centers the column and still lets a tall form scroll from its top. */
+.star-login-column {
+  width: 100%;
+  max-width: 400px;
+  margin: auto;
+}
+
+/* Shown only when the logo card is hidden. */
+.star-login-brand {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+@media (max-width: 759px) {
+  .star-login-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .star-login-card {
+    display: none;
+  }
+
+  .star-login-brand {
+    display: flex;
+  }
+}
+
+@media (max-height: 640px) {
+  .star-login-main {
+    padding: 12px 24px;
+  }
+
+  .star-login-brand {
+    margin-bottom: 16px;
+  }
+}

@@ -1,0 +1,1270 @@
+import { PublicAccessManager } from './services/publicAccess'
+import type { DesktopPublicAccessConfiguration } from '../src/lib/desktopHost/types'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, session, systemPreferences, WebContentsView, webContents } from 'electron'
+import { autoUpdater } from 'electron-updater'
+import path from 'node:path'
+import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
+import {
+  isElectronIpcChannel,
+  isElectronIpcChannelAllowedForPetWindow,
+  validateElectronIpcPayload,
+} from './ipc/capabilities'
+import { ElectronServerRuntime } from './services/serverRuntime'
+import { DataMigration } from './services/dataMigration'
+import { areStorageWritesFrozen, setStorageWritesFrozen } from './services/storageMaintenance'
+import { resolveRelocatedAttachmentPath } from '../../src/utils/storageRelocations'
+import { appendHostDiagnostic, electronHostDiagnosticsFile, sanitizeHostDiagnostic } from './services/sidecarManager'
+import { openDialog, saveDialog } from './services/dialogs'
+import { openExternalUrl, openSystemPath, openSystemSettingsUrl } from './services/shell'
+import {
+  notificationPermissionState,
+  requestNotificationPermission,
+  sendDesktopNotification,
+} from './services/notifications'
+import { installApplicationMenu, installRendererContextMenu } from './services/menu'
+import { saveWorkspaceBrowserPdf } from './services/workspaceBrowserPdf'
+import { workspaceBrowserMenuPosition } from './services/workspaceBrowserMenu'
+import type { WorkspaceBrowserMenuOptions } from '../src/lib/desktopHost/types'
+import { acquireSingleInstanceLock, isSingleInstanceLockDisabled } from './services/singleInstance'
+import {
+  installStarAgentOpenUrlHandler,
+  registerStarAgentProtocol,
+  starAgentProtocolRegistration,
+  withoutStarAgentUrls,
+} from './services/starAgentProtocol'
+import { resolveAppVersion } from './services/appVersion'
+import { buildDesktopDiscoveryRecord, desktopDiscoveryFile, writeDesktopDiscoveryFile } from './services/desktopDiscovery'
+import { installTray, shouldInstallTray, type TrayController } from './services/tray'
+import { brandAgentName, brandNameFile, brandWindowTitle, watchBrandName, type BrandNameSource } from './services/brandName'
+import { applySystemPrefs, readSystemPrefs, systemPrefsState, updateSystemPrefs } from './services/systemPrefs'
+import { ElectronUpdaterService, updaterSessionProxyConfig } from './services/updater'
+import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
+import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
+import { ElectronPreviewService, type PreviewBounds } from './services/preview'
+import {
+  ElectronWorkspaceBrowserService,
+  WORKSPACE_BROWSER_PARTITION,
+  type WorkspaceBrowserCaptureKind,
+  type WorkspaceBrowserCreateOptions,
+  type WorkspaceBrowserFindOptions,
+  type WorkspaceBrowserWebContentsLike,
+} from './services/workspaceBrowser'
+import {
+  installWorkspaceBrowserGuestPolicy,
+  resolveWorkspaceBrowserGuest,
+} from './services/workspaceBrowserGuest'
+import {
+  configureLocalServerRequestAuth,
+  configurePreviewSessionPermissions,
+  createPreviewSessionPartition,
+  isAllowlistedMainRendererMediaRequest,
+  type PreviewLocalAccess,
+} from './services/previewSession'
+import {
+  applyStartupPortableMode,
+  clearAppManagedPortableEnv,
+  getAppMode,
+  setAppMode,
+} from './services/appMode'
+import { installMacOsChromiumKeychainPromptGuard } from './services/keychain'
+import { installStdioWriteFailureGuards } from './services/stdioGuards'
+import { applyHostArchEnv, applyWindowsAppUserModelId, applyWindowsTaskbarIdentity, resolveWindowsWindowIcon } from './services/appIdentity'
+import { installMainWindowNavigationGuards, installPreviewNavigationGuards } from './services/navigationGuards'
+import { installPreviewCleanupOnRendererNavigation } from './services/previewLifecycle'
+import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
+import { normalizeZoomFactor } from './services/zoom'
+import {
+  applyAppliedAppearance,
+  isAppliedAppearance,
+  readAppearanceState,
+  startupWindowBackground,
+  type AppliedAppearance,
+} from './services/nativeAppearance'
+import { createRendererUrlMatcher, installMicrophonePermissions } from './services/microphonePermissions'
+import { resolveRendererEntry } from './services/rendererEntry'
+import { installRendererLifecycle } from './services/rendererLifecycle'
+import { writeWindowSmokeSnapshot } from './services/windowSmoke'
+import { loadAndRevealMainWindow } from './services/windowStartup'
+import {
+  PetWindowController,
+  readPetWindowPosition,
+  writePetWindowPosition,
+  type PetWindowDragPayload,
+} from './services/petWindow'
+import {
+  readLocalePreference,
+  writeLocalePreference,
+} from './services/localePreference'
+import { resolveSupportedLocale, type Locale } from '../src/i18n/locale'
+import {
+  createCustomPetCatalogLoader,
+  createCustomPetFromAtlas,
+  createCustomPetFromAtlasBytes,
+  createCustomPetFromImage,
+  ensureCustomPetsRoot,
+  getPetPackageErrorCode,
+  loadCustomPets,
+  readCustomPetSourceImage,
+} from './services/pets'
+import {
+  installFullScreenKey,
+  installWindowLifecycle,
+  readWindowState,
+  refreshWindowsDragHitTest,
+  restoreWindowMaximized,
+  saveWindowState,
+  showMainWindow,
+  windowChromeOptionsForPlatform,
+  windowOptionsFromState,
+  MIN_WINDOW_HEIGHT,
+  MIN_WINDOW_WIDTH,
+} from './services/windows'
+import { applyBundledStarCodeEnv, applyStarAgentExecutableEnv } from './services/starCodeBundle'
+import { applyUserDataLocation, describeUserDataLocation } from './services/userDataLocation'
+
+let mainWindow: BrowserWindow | null = null
+let serverRuntime: ElectronServerRuntime | null = null
+let dataMigration: DataMigration | null = null
+const hostOperations = new Set<Promise<unknown>>()
+let publicAccessManager: PublicAccessManager | null = null
+let updaterService: ElectronUpdaterService | null = null
+let terminalService: ElectronTerminalService | null = null
+let previewService: ElectronPreviewService | null = null
+let workspaceBrowserService: ElectronWorkspaceBrowserService | null = null
+let workspaceBrowserSessionConfigured = false
+let petWindowController: PetWindowController | null = null
+let isQuitting = false
+let quitCleanupStarted = false
+let quitCleanupFinished = false
+let trayController: TrayController | null = null
+/** The STAR console's product name from brand.json (tray, window title, notifications). */
+let brandSource: BrandNameSource | null = null
+
+function currentBrandName() {
+  return brandSource?.current() ?? 'STAR'
+}
+
+function applyBrandName(name: string) {
+  trayController?.setProductName(brandAgentName(name))
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setTitle(brandWindowTitle(name))
+}
+
+// Must run before anything logs: a Finder/Dock launch inherits unreadable
+// stdio, and an unguarded write failure there surfaces as a crash dialog.
+installStdioWriteFailureGuards()
+installMacOsChromiumKeychainPromptGuard(app)
+
+// Before anything reads userData, the single-instance lock included: take over
+// the folder a build under the former name left behind (or keep using it in
+// place when it cannot be moved yet).
+const userDataLocationNote = describeUserDataLocation(applyUserDataLocation(app))
+if (userDataLocationNote) appendHostDiagnostic(electronHostDiagnosticsFile(process.env), userDataLocationNote)
+
+function appRoot() {
+  return app.isPackaged ? app.getAppPath() : process.cwd()
+}
+
+function unpackedRoot() {
+  const root = appRoot()
+  return app.isPackaged ? root.replace(/\.asar$/, '.asar.unpacked') : root
+}
+
+let cachedAppVersion: string | null = null
+/** desktop/package.json's version, in development too (see appVersion.ts). */
+function appVersion() {
+  cachedAppVersion ??= resolveAppVersion({ isPackaged: app.isPackaged, appVersion: app.getVersion(), appRoot: appRoot() })
+  return cachedAppVersion
+}
+
+/**
+ * Tells STAR Code how to bring this app back (desktop-app.json). Only a run
+ * that holds the single-instance lock does, since only a second start of such a
+ * run turns into focusing its window. Written after the portable-mode switch,
+ * so it lands next to the STAR session the IDE also reads.
+ */
+function advertiseToStarCode() {
+  if (isSingleInstanceLockDisabled()) return
+  let failure: string | null
+  try {
+    failure = writeDesktopDiscoveryFile(buildDesktopDiscoveryRecord({
+      isPackaged: app.isPackaged,
+      execPath: process.execPath,
+      // A star-agent:// URL that launched this run is untrusted: never replay it.
+      argv: withoutStarAgentUrls(process.argv),
+      cwd: process.cwd(),
+      pid: process.pid,
+      version: appVersion(),
+    }), desktopDiscoveryFile(process.env))
+  } catch {
+    failure = 'error'
+  }
+  if (failure) console.warn(`[desktop] could not write the STAR Code discovery file (${failure})`)
+  // ...and star-agent://, which works without knowing where this app lives.
+  const registration = starAgentProtocolRegistration({
+    isPackaged: app.isPackaged,
+    execPath: process.execPath,
+    argv: process.argv,
+    cwd: process.cwd(),
+    singleInstanceLockDisabled: isSingleInstanceLockDisabled(),
+    hasCustomUserDataDir: app.commandLine.hasSwitch('user-data-dir'),
+  })
+  if (registration && !registerStarAgentProtocol(app, registration)) {
+    console.warn('[desktop] could not register the star-agent:// protocol')
+  }
+}
+
+function preloadPath() {
+  return path.join(appRoot(), 'electron-dist', 'preload.cjs')
+}
+
+function previewPreloadPath() {
+  return path.join(appRoot(), 'electron-dist', 'preview-preload.cjs')
+}
+
+function petPreloadPath() {
+  return path.join(appRoot(), 'electron-dist', 'pet-preload.cjs')
+}
+
+function previewAgentPath() {
+  return path.join(appRoot(), 'src-tauri', 'resources', 'preview-agent.js')
+}
+
+function rendererEntry() {
+  return resolveRendererEntry({
+    isPackaged: app.isPackaged,
+    appRoot: appRoot(),
+    env: process.env,
+  })
+}
+
+/**
+ * Last appearance the renderer reported, kept in memory so the OS-flip watcher
+ * does not have to re-read the cache file (and race with its own write).
+ * Seeded from disk on first use because the renderer has not reported yet.
+ */
+let lastAppliedAppearance: AppliedAppearance | null = null
+
+function currentAppearance(): AppliedAppearance | null {
+  if (!lastAppliedAppearance) lastAppliedAppearance = readAppearanceState(app)
+  return lastAppliedAppearance
+}
+
+/**
+ * The renderer keeps its theme in localStorage, which the main process cannot
+ * read, so the last applied appearance is replayed from cache to pick the
+ * pre-paint window background. First launch falls back to the OS setting.
+ *
+ * `shouldUseDarkColors` is the true OS setting here because `themeSource` is
+ * never pinned — see services/nativeAppearance.ts.
+ */
+function resolveStartupWindowBackground(): string {
+  return startupWindowBackground(currentAppearance(), nativeTheme.shouldUseDarkColors)
+}
+
+/**
+ * While the user follows the OS, repaint window backgrounds the moment the OS
+ * flips instead of waiting for the renderer to notice and report back — that
+ * round-trip is visible as a flash of the old color when resizing.
+ */
+function installSystemAppearanceWatch() {
+  nativeTheme.on('updated', () => {
+    const current = currentAppearance()
+    if (current && !current.followSystem) return
+    const background = startupWindowBackground(current, nativeTheme.shouldUseDarkColors)
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(background)
+  })
+}
+
+async function loadRendererEntry(
+  window: BrowserWindow,
+  query?: Record<string, string>,
+) {
+  const entry = rendererEntry()
+  if (/^https?:\/\//.test(entry)) {
+    const url = new URL(entry)
+    for (const [key, value] of Object.entries(query ?? {})) {
+      url.searchParams.set(key, value)
+    }
+    await window.loadURL(url.toString())
+  } else {
+    await window.loadFile(entry, query ? { query } : undefined)
+  }
+}
+
+function getServerRuntime() {
+  serverRuntime ??= new ElectronServerRuntime({
+    onServerUnavailable: () => { void publicAccessManager?.serverUnavailable() },
+    onServerReady: () => { void publicAccessManager?.serverChanged() },
+    desktopRoot: unpackedRoot(),
+    appRoot: appRoot(),
+    h5DistDir: path.join(unpackedRoot(), 'dist'),
+    diagnosticsFile: electronHostDiagnosticsFile(process.env),
+    resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
+  })
+  return serverRuntime
+}
+
+function getDataMigration() {
+  dataMigration ??= new DataMigration(app, {
+    preview: () => getServerRuntime().getMigrationPreview(),
+    async quiesce() {
+      await Promise.allSettled([...hostOperations])
+      if (mainWindow && !mainWindow.isDestroyed()) saveWindowState(app, mainWindow)
+      petWindowController?.dispose()
+      petWindowController = null
+      await publicAccessManager?.dispose()
+      publicAccessManager = null
+      setStorageWritesFrozen(true)
+      await getServerRuntime().quiesceForMigration()
+    },
+    async resume() {
+      setStorageWritesFrozen(false)
+      await getServerRuntime().resumeAfterMigration()
+      await getPublicAccessManager().restore().catch(() => {})
+    },
+    restart() {
+      isQuitting = true
+      app.relaunch()
+      app.quit()
+    },
+    progress(status) {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send(ELECTRON_EVENT_CHANNELS.migrationProgress, status)
+      }
+    },
+  })
+  return dataMigration
+}
+
+function getPublicAccessManager() {
+  if (publicAccessManager) return publicAccessManager
+  let queue: Promise<unknown> = Promise.resolve()
+  publicAccessManager = new PublicAccessManager({
+    directory: path.join(getAppMode(app).activeConfigDir ?? app.getPath('userData'), 'cc-haha', 'public-access'),
+    backend: {
+      request<T>(route: string, method: string, body?: unknown): Promise<T> {
+        const operation = queue.catch(() => {}).then(async () => {
+          const runtime = getServerRuntime()
+          // Never boot the sidecar merely to disable an already stopped tunnel.
+          const serverUrl = runtime.getActiveServerUrl()
+          if (!serverUrl) throw new Error('Server unavailable')
+          const response = await fetch(`${serverUrl}/api/public-access${route}`, {
+            method,
+            headers: { Authorization: `Bearer ${runtime.getLocalAccessToken()}`, 'Content-Type': 'application/json' },
+            body: body === undefined ? undefined : JSON.stringify(body),
+            signal: AbortSignal.timeout(10_000),
+          })
+          if (!response.ok) throw new Error('Public access configuration failed')
+          return await response.json() as T
+        })
+        queue = operation
+        return operation
+      },
+    },
+  })
+  return publicAccessManager
+}
+
+function resolvePetServerAccess(): PreviewLocalAccess | null {
+  const runtime = getServerRuntime()
+  const serverUrl = runtime.getActiveServerUrl()
+  return serverUrl
+    ? { serverUrl, token: runtime.getPetAccessToken() }
+    : null
+}
+
+function resolveMainRendererServerAccess(): PreviewLocalAccess | null {
+  const runtime = getServerRuntime()
+  const serverUrl = runtime.getActiveServerUrl()
+  return serverUrl
+    ? { serverUrl, token: runtime.getLocalAccessToken() }
+    : null
+}
+
+function getUpdaterService() {
+  const smokeUpdater = createUpdateSmokeUpdaterFromEnv(process.env)
+  updaterService ??= new ElectronUpdaterService(smokeUpdater ?? autoUpdater, {
+    async apply(proxy) {
+      // Update traffic runs on electron-updater's own session partition;
+      // configuring app/defaultSession proxies never reaches it.
+      await autoUpdater.netSession.setProxy(updaterSessionProxyConfig(proxy))
+    },
+  }, {
+    // Every real run is gated on a STAR feed in the packaged app-update.yml (a
+    // development run has none), so the updater stays idle unless one was built in.
+    updateConfigPath: smokeUpdater ? undefined : path.join(process.resourcesPath, 'app-update.yml'),
+  })
+  return updaterService
+}
+
+function nodePtyRuntimeCacheDir() {
+  if (!app.isPackaged || process.platform !== 'darwin') return undefined
+  return path.join(app.getPath('userData'), 'native', `node-pty-${process.platform}-${process.arch}-${app.getVersion()}`)
+}
+
+function getTerminalService() {
+  terminalService ??= new ElectronTerminalService({
+    app,
+    nodePtySourceDir: app.isPackaged ? path.join(unpackedRoot(), 'node_modules', 'node-pty') : undefined,
+    nodePtyCacheDir: nodePtyRuntimeCacheDir(),
+  })
+  return terminalService
+}
+
+function getPreviewService() {
+  previewService ??= new ElectronPreviewService({
+    previewScriptPath: previewAgentPath(),
+    resolveScaleFactor: parent => {
+      const bounds = parent.getBounds?.()
+      return bounds ? screen.getDisplayMatching(bounds).scaleFactor : 1
+    },
+    createView: () => {
+      const view = new WebContentsView({
+        webPreferences: {
+          preload: previewPreloadPath(),
+          partition: createPreviewSessionPartition(),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      })
+      configurePreviewSessionPermissions(view.webContents.session)
+      installPreviewNavigationGuards(view.webContents, { openExternal: openExternalUrl })
+      return view
+    },
+  })
+  return previewService
+}
+
+function getPetWindowController() {
+  petWindowController ??= new PetWindowController({
+    createWindow: options => new BrowserWindow(options),
+    getCursorScreenPoint: () => screen.getCursorScreenPoint(),
+    getCurrentWorkArea: () => screen.getDisplayNearestPoint(
+      screen.getCursorScreenPoint(),
+    ).workArea,
+    getWorkAreaForPoint: point => screen.getDisplayNearestPoint(point).workArea,
+    preloadPath: petPreloadPath(),
+    platform: process.platform,
+    readPosition: () => readPetWindowPosition(process.env, app.getPath('home')),
+    writePosition: position => writePetWindowPosition(position, process.env, app.getPath('home')),
+    onCreated: (window) => {
+      configurePreviewSessionPermissions(window.webContents.session)
+      configureLocalServerRequestAuth(
+        window.webContents.session.webRequest,
+        resolvePetServerAccess,
+      )
+      installMainWindowNavigationGuards(window.webContents, { openExternal: openExternalUrl })
+    },
+    load: window => loadRendererEntry(window, { petWindow: '1' }),
+    onPanelPlacementChanged: (window, placement) => {
+      if (window.isDestroyed()) return
+      window.webContents.send(ELECTRON_EVENT_CHANNELS.petPanelPlacementChanged, placement)
+    },
+  })
+  return petWindowController
+}
+
+const loadCustomPetCatalog = createCustomPetCatalogLoader(() => loadCustomPets({
+    inspectImageSize: ({ data }) => nativeImage.createFromBuffer(data).getSize(),
+  }))
+
+function workspaceBrowserDownloadsDir() {
+  return app.getPath('downloads')
+}
+
+function getWorkspaceBrowserService() {
+  workspaceBrowserService ??= new ElectronWorkspaceBrowserService({
+    previewScriptPath: previewAgentPath(),
+    menuFactory: template => {
+      const window = mainWindow
+      if (!window || window.isDestroyed()) throw new Error('Workspace browser menu requires a live main window')
+      const menu = Menu.buildFromTemplate(template)
+      return {
+        popup: options => menu.popup({ ...options, window }),
+        closePopup: () => { if (!window.isDestroyed()) menu.closePopup(window) },
+      }
+    },
+    emit: event => {
+      mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.workspaceBrowserEvent, event)
+    },
+    writePdf: async ({ data, filename }) => {
+      return saveWorkspaceBrowserPdf(data, async () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return null
+        const result = await dialog.showSaveDialog(mainWindow, {
+          defaultPath: path.join(workspaceBrowserDownloadsDir(), filename),
+          filters: [{ name: 'PDF', extensions: ['pdf'] }],
+        })
+        return result.canceled ? null : result.filePath ?? null
+      })
+    },
+    // Pages are `<webview>` guests the renderer creates; their preferences are
+    // fixed by `installWorkspaceBrowserGuestPolicy` on the main window. The id
+    // the renderer reports is only adopted if it names one of those guests.
+    resolveGuest: webContentsId => resolveWorkspaceBrowserGuest<Electron.WebContents>(webContentsId, {
+      fromId: id => webContents.fromId(id),
+      host: mainWindow?.webContents,
+      session: workspaceBrowserSession(),
+    }) as WorkspaceBrowserWebContentsLike,
+  })
+  return workspaceBrowserService
+}
+
+/**
+ * One shared persistent partition for every workspace page: a login in one
+ * tab has to still be there in the next one. Per-tab partitions would turn
+ * every new tab into a fresh, logged-out browser.
+ */
+function workspaceBrowserSession() {
+  const browserSession = session.fromPartition(WORKSPACE_BROWSER_PARTITION)
+  // Same boundary as the singleton preview: OS permissions are denied, and
+  // `configureLocalServerRequestAuth` is deliberately NOT installed here.
+  // These pages render arbitrary remote sites, so attaching the desktop's
+  // local access token to their loopback requests would hand any visited
+  // site the local API.
+  if (!workspaceBrowserSessionConfigured) {
+    workspaceBrowserSessionConfigured = true
+    configurePreviewSessionPermissions(browserSession)
+  }
+  return browserSession
+}
+
+
+async function listCustomPets() {
+  const { pets, errors } = await loadCustomPetCatalog()
+  return { pets, errors }
+}
+
+function focusPetSession(sessionId: string) {
+  showMainWindow(mainWindow, app)
+  mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.petNavigateSession, sessionId)
+}
+
+function currentWindow(event: Electron.IpcMainInvokeEvent) {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window) throw new Error('No BrowserWindow for Electron IPC event')
+  return window
+}
+
+function registerHandler<T>(
+  channel: ElectronIpcChannel,
+  handler: (event: Electron.IpcMainInvokeEvent, payload: unknown) => T | Promise<T>,
+) {
+  ipcMain.handle(channel, async (event, payload) => {
+    if (!isElectronIpcChannel(channel) || !validateElectronIpcPayload(channel, payload)) {
+      throw new Error(`Invalid Electron IPC payload for ${channel}`)
+    }
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    const migrationControl = channel.startsWith('desktop:app-mode:migration:')
+    if (migrationControl && (senderWindow !== mainWindow || event.senderFrame !== event.sender.mainFrame)) {
+      throw new Error('Data migration requires the main desktop window')
+    }
+    if ((dataMigration?.running || areStorageWritesFrozen()) && !migrationControl && channel !== ELECTRON_IPC_CHANNELS.shellOpenPath) {
+      throw new Error('Data migration is in progress')
+    }
+    if (channel.startsWith('desktop:public-access:') && (senderWindow !== mainWindow || event.senderFrame !== event.sender.mainFrame)) {
+      throw new Error('Public access management requires the main desktop window')
+    }
+    if (
+      petWindowController?.owns(senderWindow) &&
+      !isElectronIpcChannelAllowedForPetWindow(channel)
+    ) {
+      throw new Error(`Electron IPC channel ${channel} is not available to the pet window`)
+    }
+    if (migrationControl) return handler(event, payload)
+    const operation = Promise.resolve().then(() => handler(event, payload))
+    hostOperations.add(operation)
+    try { return await operation } finally { hostOperations.delete(operation) }
+  })
+}
+
+function unsupported(name: string): never {
+  throw new Error(`${name} is not implemented in the Electron host yet`)
+}
+
+function emitNotificationAction(payload: unknown) {
+  showMainWindow(mainWindow, app)
+  mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.notificationAction, payload)
+}
+
+function broadcastLocaleChanged(locale: Locale) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    window.webContents.send(ELECTRON_EVENT_CHANNELS.appLocaleChanged, locale)
+  }
+}
+
+async function handleCommandInvoke(payload: unknown): Promise<unknown> {
+  const { command, args } = payload as { command: string, args?: Record<string, unknown> }
+
+  switch (command) {
+    case 'plugin:notification|is_permission_granted':
+      return notificationPermissionState(Notification) === 'granted'
+    case 'plugin:notification|request_permission':
+    case 'macos_request_notification_permission':
+      return requestNotificationPermission(Notification)
+    case 'macos_notification_permission_state':
+      return notificationPermissionState(Notification)
+    case 'macos_send_notification':
+      return sendDesktopNotification({
+        NotificationClass: Notification,
+        options: args,
+        onAction: emitNotificationAction,
+        brandName: currentBrandName(),
+      })
+    case 'macos_open_notification_settings':
+      return openSystemSettingsUrl('x-apple.systempreferences:com.apple.preference.notifications')
+    case 'open_windows_notification_settings':
+      return openSystemSettingsUrl('ms-settings:notifications')
+    default:
+      return unsupported(`Electron command ${command}`)
+  }
+}
+
+function registerIpcHandlers() {
+  ipcMain.on(ELECTRON_INTERNAL_CHANNELS.previewMessageFromView, (event, raw) => {
+    // Workspace pages and the legacy singleton preview share one preload, so the
+    // owner of the sender decides which service receives the message.
+    if (getWorkspaceBrowserService().handleMessageFromView(event.sender, raw)) return
+    void getPreviewService().sendMessageToRenderer(event.sender, raw, mainWindow?.webContents)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.publicAccessGetStatus, () => getPublicAccessManager().getStatus())
+  registerHandler(ELECTRON_IPC_CHANNELS.publicAccessConfigure, (_event, payload) => getPublicAccessManager().configure(payload as DesktopPublicAccessConfiguration))
+  registerHandler(ELECTRON_IPC_CHANNELS.publicAccessSaveCredential, (_event, payload) => getPublicAccessManager().saveCredential(payload as string))
+  registerHandler(ELECTRON_IPC_CHANNELS.publicAccessDeleteCredential, () => getPublicAccessManager().deleteCredential())
+  registerHandler(ELECTRON_IPC_CHANNELS.publicAccessStart, (_event, payload) => getPublicAccessManager().start(payload as number))
+  registerHandler(ELECTRON_IPC_CHANNELS.publicAccessStop, () => getPublicAccessManager().stop())
+  registerHandler(ELECTRON_IPC_CHANNELS.publicAccessSetAutoStart, (_event, payload) => getPublicAccessManager().setAutoStart(payload as boolean))
+  registerHandler(ELECTRON_IPC_CHANNELS.appGetVersion, () => appVersion())
+  registerHandler(ELECTRON_IPC_CHANNELS.appGetSystemPrefs, () => systemPrefsState(app))
+  registerHandler(ELECTRON_IPC_CHANNELS.appSetSystemPrefs, (_event, payload) =>
+    updateSystemPrefs(app, payload as { openAtLogin?: boolean; closeToTray?: boolean; preventSleep?: boolean }))
+  registerHandler(
+    ELECTRON_IPC_CHANNELS.appGetLocalePreference,
+    () => readLocalePreference(app),
+  )
+  registerHandler(ELECTRON_IPC_CHANNELS.appSetLocalePreference, (event, payload) => {
+    if (currentWindow(event) !== mainWindow) {
+      throw new Error('Only the main window can change the locale preference')
+    }
+    const locale = payload as Locale
+    writeLocalePreference(app, locale)
+    broadcastLocaleChanged(locale)
+  })
+  registerHandler(
+    ELECTRON_IPC_CHANNELS.appGetPreferredSystemLanguages,
+    () => app.getPreferredSystemLanguages(),
+  )
+  registerHandler(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl, () => getServerRuntime().getServerUrl())
+  registerHandler(
+    ELECTRON_IPC_CHANNELS.runtimeGetLocalAccessToken,
+    () => getServerRuntime().getLocalAccessToken(),
+  )
+  registerHandler(
+    ELECTRON_IPC_CHANNELS.runtimeGetPetAccessToken,
+    () => getServerRuntime().getPetAccessToken(),
+  )
+  registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
+  registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())
+  registerHandler(ELECTRON_IPC_CHANNELS.clipboardWriteText, (_event, payload) => clipboard.writeText(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.shellOpen, (_event, payload) => openExternalUrl(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.shellOpenPath, (_event, payload) => openSystemPath(resolveRelocatedAttachmentPath(String(payload))))
+  registerHandler(ELECTRON_IPC_CHANNELS.petsList, () => listCustomPets())
+  registerHandler(ELECTRON_IPC_CHANNELS.petsCreateFromImage, async (event, payload) => {
+    const input = payload as {
+      slug: string
+      displayName: string
+      description: string
+      dialogTitle?: string
+      dialogFilterName?: string
+    }
+    const imagePath = await openDialog(currentWindow(event), {
+      title: input.dialogTitle || 'Choose a transparent pet image',
+      filters: [{ name: input.dialogFilterName || 'Pet image', extensions: ['png', 'webp'] }],
+    })
+    if (typeof imagePath !== 'string') return null
+    try {
+      const pet = await loadCustomPetCatalog.invalidateAfter(() =>
+        createCustomPetFromImage({
+          slug: input.slug,
+          displayName: input.displayName,
+          description: input.description,
+          imagePath,
+        }, {
+          inspectImageSize: ({ data }) => nativeImage.createFromBuffer(data).getSize(),
+        }))
+      return { id: pet.id }
+    } catch (error) {
+      return { errorCode: getPetPackageErrorCode(error) }
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsCreateFromAtlas, async (event, payload) => {
+    const input = payload as {
+      slug: string
+      displayName: string
+      description: string
+      dialogTitle?: string
+      dialogFilterName?: string
+    }
+    const atlasPath = await openDialog(currentWindow(event), {
+      title: input.dialogTitle || 'Choose a v2 pet animation atlas',
+      filters: [{ name: input.dialogFilterName || 'Pet animation atlas', extensions: ['png', 'webp'] }],
+    })
+    if (typeof atlasPath !== 'string') return null
+    try {
+      const pet = await loadCustomPetCatalog.invalidateAfter(() =>
+        createCustomPetFromAtlas({
+          slug: input.slug,
+          displayName: input.displayName,
+          description: input.description,
+          atlasPath,
+        }, {
+          inspectImageSize: ({ data }) => nativeImage.createFromBuffer(data).getSize(),
+        }))
+      return { id: pet.id }
+    } catch (error) {
+      return { errorCode: getPetPackageErrorCode(error) }
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsPickSourceSheet, async (event, payload) => {
+    const input = payload as { dialogTitle?: string, dialogFilterName?: string }
+    const imagePath = await openDialog(currentWindow(event), {
+      title: input.dialogTitle || 'Choose a pet action sheet',
+      filters: [{ name: input.dialogFilterName || 'Pet action sheet', extensions: ['png', 'webp'] }],
+    })
+    if (typeof imagePath !== 'string') return null
+    try {
+      const source = await readCustomPetSourceImage(imagePath)
+      // The renderer needs the pixels to assemble the atlas on a canvas; the path
+      // itself is deliberately never handed over.
+      return {
+        bytes: source.data,
+        mimeType: source.mimeType,
+        width: source.width,
+        height: source.height,
+      }
+    } catch (error) {
+      return { errorCode: getPetPackageErrorCode(error) }
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsCreateFromAtlasBytes, async (_event, payload) => {
+    const input = payload as {
+      slug: string
+      displayName: string
+      description: string
+      atlasData: Uint8Array
+      mimeType: 'image/png' | 'image/webp'
+    }
+    try {
+      const pet = await loadCustomPetCatalog.invalidateAfter(() =>
+        createCustomPetFromAtlasBytes({
+          slug: input.slug,
+          displayName: input.displayName,
+          description: input.description,
+          atlasData: input.atlasData,
+          mimeType: input.mimeType,
+        }, {
+          inspectImageSize: ({ data }) => nativeImage.createFromBuffer(data).getSize(),
+        }))
+      return { id: pet.id }
+    } catch (error) {
+      return { errorCode: getPetPackageErrorCode(error) }
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsOpenFolder, async () => {
+    const root = await ensureCustomPetsRoot()
+    await openSystemPath(root)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsShow, async () => {
+    await getPetWindowController().show()
+    mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.petVisibilityChanged, true)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsHide, () => {
+    getPetWindowController().hide()
+    mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.petVisibilityChanged, false)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsShowContextMenu, (event, payload) => {
+    const { closeLabel } = payload as { closeLabel: string }
+    return getPetWindowController().showContextMenu(
+      currentWindow(event),
+      closeLabel.trim(),
+      Menu,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsDragWindow, (event, payload) =>
+    getPetWindowController().dragWindow(
+      currentWindow(event),
+      payload as PetWindowDragPayload,
+    ))
+  registerHandler(ELECTRON_IPC_CHANNELS.petsSetIgnoreMouseEvents, (event, payload) => {
+    getPetWindowController().setIgnoreMouseEvents(currentWindow(event), Boolean(payload))
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsSetInteractiveRegions, (event, payload) =>
+    getPetWindowController().setInteractiveRegions(
+      currentWindow(event),
+      payload as Electron.Rectangle[],
+    ))
+  registerHandler(ELECTRON_IPC_CHANNELS.petsFocusMainWindow, (event) => {
+    if (!getPetWindowController().owns(currentWindow(event))) {
+      throw new Error('Pet window IPC sender does not own the companion window')
+    }
+    showMainWindow(mainWindow, app)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.petsFocusSession, (_event, payload) =>
+    focusPetSession(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.dialogOpen, (event, payload) =>
+    openDialog(currentWindow(event), payload as Parameters<typeof openDialog>[1]))
+  registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>
+    saveDialog(currentWindow(event), payload as Parameters<typeof saveDialog>[1]))
+  registerHandler(ELECTRON_IPC_CHANNELS.updateCheck, (_event, payload) =>
+    getUpdaterService().checkForUpdates(payload as Parameters<ElectronUpdaterService['checkForUpdates']>[0]))
+  registerHandler(ELECTRON_IPC_CHANNELS.updateDownload, () => getUpdaterService().downloadUpdate(event => {
+    mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.updateDownloadEvent, event)
+  }))
+  registerHandler(ELECTRON_IPC_CHANNELS.updateInstall, () => getUpdaterService().stageDownloadedUpdate())
+  registerHandler(ELECTRON_IPC_CHANNELS.updatePrepareInstall, async () => { await publicAccessManager?.stop(); getServerRuntime().stopAll() })
+  registerHandler(ELECTRON_IPC_CHANNELS.updateCancelInstall, () => getUpdaterService().cancelInstall())
+  registerHandler(ELECTRON_IPC_CHANNELS.updateRelaunch, () => {
+    if (getUpdaterService().hasStagedUpdate()) {
+      isQuitting = true
+      getUpdaterService().quitAndInstallDownloadedUpdate()
+      return
+    }
+    app.relaunch()
+    app.quit()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.notificationPermissionState, () => notificationPermissionState(Notification))
+  registerHandler(ELECTRON_IPC_CHANNELS.notificationRequestPermission, () => requestNotificationPermission(Notification))
+  registerHandler(ELECTRON_IPC_CHANNELS.notificationSend, (_event, payload) => sendDesktopNotification({
+    NotificationClass: Notification,
+    options: payload,
+    onAction: emitNotificationAction,
+    brandName: currentBrandName(),
+  }))
+  registerHandler(ELECTRON_IPC_CHANNELS.notificationActionAck, (_event, payload) =>
+    logNotificationSmokeRendererAck(process.env, payload))
+  registerHandler(ELECTRON_IPC_CHANNELS.windowMinimize, event => currentWindow(event).minimize())
+  registerHandler(ELECTRON_IPC_CHANNELS.windowToggleMaximize, event => {
+    const window = currentWindow(event)
+    if (window.isMaximized()) window.unmaximize()
+    else window.maximize()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.windowClose, event => currentWindow(event).close())
+  registerHandler(ELECTRON_IPC_CHANNELS.windowStartDragging, () => undefined)
+  registerHandler(ELECTRON_IPC_CHANNELS.windowRequestAttention, event => currentWindow(event).flashFrame(true))
+  registerHandler(ELECTRON_IPC_CHANNELS.windowFocus, event => currentWindow(event).focus())
+  registerHandler(ELECTRON_IPC_CHANNELS.windowIsMaximized, event => currentWindow(event).isMaximized())
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalSpawn, (event, payload) =>
+    getTerminalService().spawn((payload ?? {}) as TerminalSpawnInput, event.sender))
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalWrite, (event, payload) => {
+    const { sessionId, data } = payload as { sessionId: number, data: string }
+    return getTerminalService().write(sessionId, data, event.sender)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalResize, (event, payload) => {
+    const { sessionId, cols, rows } = payload as { sessionId: number, cols: number, rows: number }
+    return getTerminalService().resize(sessionId, cols, rows, event.sender)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalKill, (event, payload) => {
+    const { sessionId } = payload as { sessionId: number }
+    return getTerminalService().kill(sessionId, event.sender)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalGetBashPath, () => getTerminalService().getBashPath())
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalSetBashPath, (_event, payload) => getTerminalService().setBashPath(payload as string | null))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewOpen, (event, payload) => {
+    const { url, bounds } = payload as { url: string, bounds?: PreviewBounds }
+    return getPreviewService().open(currentWindow(event), url, bounds ?? { x: 0, y: 0, width: 0, height: 0 })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.previewNavigate, (_event, payload) => getPreviewService().navigate(String(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewSetBounds, (_event, payload) => getPreviewService().setBounds(payload as PreviewBounds))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewSetVisible, (_event, payload) => getPreviewService().setVisible(Boolean(payload)))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewSetZoom, (_event, payload) => getPreviewService().setZoomFactor(payload))
+  registerHandler(ELECTRON_IPC_CHANNELS.previewClose, () => getPreviewService().close())
+  registerHandler(ELECTRON_IPC_CHANNELS.previewMessage, (event, payload) => getPreviewService().message(payload, event.sender))
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserCreate, (event, payload) => {
+    // Pages are guests of the main window's renderer. Trace and pet windows
+    // load the same preload, so without this a secondary window could register
+    // pages it does not host — and own the menu parent of every page. Same
+    // guard shape as `appSetLocalePreference`.
+    if (!mainWindow || currentWindow(event) !== mainWindow) {
+      throw new Error('Only the main window can host workspace browser pages')
+    }
+    const { tabId, ...options } = payload as { tabId: string } & WorkspaceBrowserCreateOptions
+    return getWorkspaceBrowserService().create(mainWindow, tabId, options)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserNavigate, (_event, payload) => {
+    const { tabId, url } = payload as { tabId: string, url: string }
+    return getWorkspaceBrowserService().navigate(tabId, url)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserShowMenu, (event, payload) => {
+    if (!mainWindow || currentWindow(event) !== mainWindow || mainWindow.isDestroyed()) {
+      throw new Error('Only the main window can open workspace browser menus')
+    }
+    const { tabId, ...options } = payload as { tabId: string } & WorkspaceBrowserMenuOptions
+    const { width, height } = mainWindow.getContentBounds()
+    const anchor = workspaceBrowserMenuPosition(options, mainWindow.webContents.getZoomFactor(), { width, height })
+    return getWorkspaceBrowserService().showMenu(mainWindow, tabId, { ...options, ...anchor })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserGoBack, (_event, payload) =>
+    getWorkspaceBrowserService().goBack((payload as { tabId: string }).tabId))
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserGoForward, (_event, payload) =>
+    getWorkspaceBrowserService().goForward((payload as { tabId: string }).tabId))
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserReload, (_event, payload) => {
+    const { tabId, ignoreCache } = payload as { tabId: string, ignoreCache?: boolean }
+    return getWorkspaceBrowserService().reload(tabId, { ignoreCache })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserStop, (_event, payload) =>
+    getWorkspaceBrowserService().stop((payload as { tabId: string }).tabId))
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserSetVisible, (_event, payload) => {
+    const { tabId, visible } = payload as { tabId: string, visible: boolean }
+    return getWorkspaceBrowserService().setVisible(tabId, visible)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserSetZoom, (_event, payload) => {
+    const { tabId, factor } = payload as { tabId: string, factor: number }
+    return getWorkspaceBrowserService().setZoom(tabId, factor)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserFind, (_event, payload) => {
+    const { tabId, text, options } = payload as {
+      tabId: string
+      text: string
+      options?: WorkspaceBrowserFindOptions
+    }
+    return getWorkspaceBrowserService().find(tabId, text, options)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserStopFind, (_event, payload) =>
+    getWorkspaceBrowserService().stopFind((payload as { tabId: string }).tabId))
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserCapture, (_event, payload) => {
+    const { tabId, kind } = payload as { tabId: string, kind: WorkspaceBrowserCaptureKind }
+    return getWorkspaceBrowserService().capture(tabId, kind)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserMessage, (_event, payload) => {
+    const { tabId, payload: message } = payload as { tabId: string, payload: unknown }
+    return getWorkspaceBrowserService().message(tabId, message)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserPrintToPdf, (_event, payload) =>
+    getWorkspaceBrowserService().printToPdf((payload as { tabId: string }).tabId))
+  registerHandler(ELECTRON_IPC_CHANNELS.workspaceBrowserClose, (_event, payload) =>
+    getWorkspaceBrowserService().close((payload as { tabId: string }).tabId))
+  registerHandler(ELECTRON_IPC_CHANNELS.appModeGet, () => getAppMode(app))
+  registerHandler(ELECTRON_IPC_CHANNELS.migrationPrepare, (_event, payload) => getDataMigration().prepare((payload as { targetDir: string }).targetDir))
+  registerHandler(ELECTRON_IPC_CHANNELS.migrationStart, (_event, payload) => getDataMigration().start((payload as { id: string }).id))
+  registerHandler(ELECTRON_IPC_CHANNELS.migrationStatus, () => getDataMigration().status)
+  registerHandler(ELECTRON_IPC_CHANNELS.migrationCancel, (_event, payload) => getDataMigration().cancel((payload as { id: string }).id))
+  registerHandler(ELECTRON_IPC_CHANNELS.appModeSet, (_event, payload) => setAppMode(app, payload as Parameters<typeof setAppMode>[1]))
+  registerHandler(ELECTRON_IPC_CHANNELS.appModePrepareRestart, () => getServerRuntime().stopAll(true))
+  registerHandler(ELECTRON_IPC_CHANNELS.appModeRestart, () => {
+    isQuitting = true
+    app.relaunch()
+    app.quit()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.adaptersRestartSidecar, () => getServerRuntime().restartAdaptersSidecars())
+  registerHandler(ELECTRON_IPC_CHANNELS.zoomSet, (event, payload) => {
+    const window = currentWindow(event)
+    window.webContents.setZoomFactor(normalizeZoomFactor(payload))
+    // Electron pushes the embedder's zoom into every browser guest; app zoom
+    // must not change the pages' own zoom.
+    if (window === mainWindow) workspaceBrowserService?.restorePageZoom()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.appearanceSetApplied, (_event, payload) => {
+    if (!isAppliedAppearance(payload)) return
+    lastAppliedAppearance = payload
+    applyAppliedAppearance(payload, {
+      app,
+      // The pet window is deliberately transparent, so it stays out of this.
+      windows: () => mainWindow ? [mainWindow] : [],
+    })
+  })
+}
+
+async function createMainWindow() {
+  const restoredState = readWindowState(app, screen.getAllDisplays())
+  const bounds = windowOptionsFromState(restoredState)
+  const identityPaths = { desktopRoot: appRoot(), resourcesPath: process.resourcesPath }
+  mainWindow = new BrowserWindow({
+    ...bounds,
+    icon: resolveWindowsWindowIcon(identityPaths),
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
+    show: false,
+    // Painted before the renderer produces its first frame; without it a
+    // dark-theme user gets a white flash on every launch.
+    backgroundColor: resolveStartupWindowBackground(),
+    ...windowChromeOptionsForPlatform(process.platform),
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // Only for the workspace browser, whose pages must be composited with
+      // the DOM. Every attach is decided by the guest policy installed below.
+      webviewTag: true,
+    },
+  })
+  applyWindowsTaskbarIdentity(mainWindow, {
+    ...identityPaths,
+    isPackaged: app.isPackaged,
+    executablePath: process.execPath,
+  })
+  // Before any guest can exist: its session denies OS permissions, and its
+  // preferences are replaced with the sandboxed set the policy pins.
+  workspaceBrowserSession()
+  installWorkspaceBrowserGuestPolicy(mainWindow.webContents, { preload: previewPreloadPath() })
+  // The STAR console's name (brand.json); the page's static <title> must not replace it.
+  mainWindow.setTitle(brandWindowTitle(currentBrandName()))
+  mainWindow.on('page-title-updated', event => event.preventDefault())
+  configureLocalServerRequestAuth(
+    mainWindow.webContents.session.webRequest,
+    resolveMainRendererServerAccess,
+    details => isAllowlistedMainRendererMediaRequest(
+      details,
+      mainWindow!.webContents.id,
+    ),
+  )
+  // Audio capture (dictation) is limited to application windows showing the app
+  // entry: the main window and the detached trace window, which renders the same
+  // chat input. Preview and workspace pages use their own partitions. Other
+  // permissions stay as before.
+  installMicrophonePermissions(mainWindow.webContents.session, {
+    isAppContents: contents => {
+      const owner = BrowserWindow.fromWebContents(contents)
+      return !!owner && !owner.isDestroyed()
+    },
+    isAppUrl: createRendererUrlMatcher(rendererEntry()),
+    systemPreferences,
+  })
+  installMainWindowNavigationGuards(mainWindow.webContents, { openExternal: openExternalUrl })
+  await installRendererContextMenu(
+    mainWindow,
+    () => readLocalePreference(app) ?? resolveSupportedLocale(app.getPreferredSystemLanguages()),
+  )
+  installPreviewCleanupOnRendererNavigation(mainWindow.webContents, () => {
+    previewService?.close()
+    // A renderer reload discards every workspace tab, so the pages behind them
+    // have to go too rather than linger as orphaned webContents.
+    workspaceBrowserService?.closeAll()
+  })
+
+  installWindowLifecycle({
+    app,
+    window: mainWindow,
+    shouldQuit: () => {
+      if (isQuitting) return true
+      // 关闭窗口时最小化到托盘 turned off: closing the window quits the app.
+      if (!readSystemPrefs(app).closeToTray) {
+        isQuitting = true
+        setImmediate(() => app.quit())
+        return true
+      }
+      return false
+    },
+  })
+  installFullScreenKey(mainWindow, process.platform)
+
+  const window = mainWindow
+  const diagnosticsFile = electronHostDiagnosticsFile(process.env)
+  const recordRendererDiagnostic = (detail: string) => {
+    const sanitized = sanitizeHostDiagnostic(detail)
+    appendHostDiagnostic(diagnosticsFile, `[renderer] ${sanitized}`)
+    return sanitized
+  }
+
+  window.on('resize', () => {
+    if (window.isDestroyed()) return
+    window.webContents.send(ELECTRON_EVENT_CHANNELS.windowResized)
+  })
+  installRendererLifecycle({
+    window,
+    isQuitting: () => isQuitting,
+    recordDiagnostic: recordRendererDiagnostic,
+    writeSnapshot: reason => writeWindowSmokeSnapshot(window, reason),
+    onRendererProcessGone: detail => {
+      console.error(`[desktop] Electron renderer process exited: ${detail}`)
+    },
+    onRecoveryExhausted: detail => {
+      console.error(`[desktop] Electron renderer recovery exhausted: ${detail}`)
+      dialog.showErrorBox(
+        '界面恢复失败 / Interface Recovery Failed',
+        `桌面界面意外退出或持续无响应，自动恢复未能解决问题。请重启应用；如果问题持续存在，请附上诊断日志反馈。\n\nThe desktop interface exited unexpectedly or remained unresponsive, and automatic recovery did not resolve it. Restart the app and include diagnostics when reporting the problem.\n\n${detail}`,
+      )
+    },
+  })
+  writeWindowSmokeSnapshot(mainWindow, 'after-create')
+
+  await loadAndRevealMainWindow({
+    load: () => loadRendererEntry(mainWindow!),
+    beforeReveal: () => restoreWindowMaximized(mainWindow!, restoredState),
+    reveal: () => showMainWindow(mainWindow, app),
+    onLoadFailure: (error) => {
+      const detail = sanitizeHostDiagnostic(error instanceof Error ? error.message : String(error))
+      console.error(`[desktop] failed to load Electron renderer: ${detail}`)
+      writeWindowSmokeSnapshot(mainWindow, 'renderer-load-failed')
+      dialog.showErrorBox(
+        '启动错误 / Startup Error',
+        `桌面界面加载失败，请重启应用。如果问题持续存在，请附上诊断日志反馈。\n\nThe desktop interface could not be loaded. Restart the app and include diagnostics when reporting the problem.\n\n${detail}`,
+      )
+    },
+  })
+  refreshWindowsDragHitTest(mainWindow, process.platform)
+  writeWindowSmokeSnapshot(mainWindow, 'after-final-show')
+}
+
+if (!acquireSingleInstanceLock(app, () => mainWindow)) {
+  process.exit(0)
+}
+
+// A star-agent:// URL only brings the window to the front. Windows and Linux
+// pass it on the command line: the first start shows its window anyway and a
+// second start becomes `second-instance` (singleInstance.ts). macOS sends
+// open-url, also for the start it launched, so it is handled before `ready`.
+installStarAgentOpenUrlHandler(app, () => showMainWindow(mainWindow, app))
+
+registerIpcHandlers()
+
+app.whenReady().then(async () => {
+  applyWindowsAppUserModelId(app)
+  clearAppManagedPortableEnv()
+  // Before the server starts: it inherits this and opens projects in the IDE
+  // the installer shipped, as its own window.
+  applyBundledStarCodeEnv(process.env, { isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, platform: process.platform })
+  // ...and the IDE's "Agent" button finds its way back to this app.
+  applyStarAgentExecutableEnv(process.env, { isPackaged: app.isPackaged, execPath: process.execPath })
+  // ...and asks the STAR console for the installer of this machine's chip.
+  applyHostArchEnv(process.env, { arch: process.arch, runningUnderARM64Translation: app.runningUnderARM64Translation })
+  let validation = false
+  try {
+    validation = await getDataMigration().recover() === 'validate'
+    applyStartupPortableMode(app)
+  } catch (error) {
+    setStorageWritesFrozen(true)
+    dialog.showErrorBox('数据目录不可用 / Data directory unavailable', error instanceof Error ? error.message : 'Migration recovery failed')
+    await createMainWindow()
+    return
+  }
+  if (validation) process.env.CC_HAHA_MIGRATION_VALIDATION = '1'
+  installSystemAppearanceWatch()
+  applySystemPrefs(app)
+  screen.on('display-metrics-changed', (_event, _display, changedMetrics) => {
+    if (changedMetrics.includes('scaleFactor') || changedMetrics.includes('bounds')) {
+      previewService?.refreshBounds()
+    }
+  })
+  try {
+    await getServerRuntime().startServer()
+    if (validation) {
+      await getServerRuntime().validateMigrationStartup()
+      await getDataMigration().completeValidation()
+      validation = false
+      await getServerRuntime().activateAfterMigrationValidation()
+      delete process.env.CC_HAHA_MIGRATION_VALIDATION
+    }
+  } catch (error) {
+    if (validation) {
+      try {
+        await getServerRuntime().stopAllAndWait()
+        await getDataMigration().failValidation(error)
+        delete process.env.CC_HAHA_MIGRATION_VALIDATION
+        clearAppManagedPortableEnv()
+        applyStartupPortableMode(app)
+        serverRuntime = null
+        await getServerRuntime().startServer().catch(startError => console.error('[desktop] original directory restart failed', startError))
+      } catch (recoveryError) {
+        setStorageWritesFrozen(true)
+        dialog.showErrorBox('数据目录不可用 / Data directory unavailable', recoveryError instanceof Error ? recoveryError.message : 'Migration recovery failed')
+        await createMainWindow()
+        return
+      }
+    } else console.error('[desktop] failed to start Electron server sidecar', error)
+  }
+  await getPublicAccessManager().restore().catch(() => {})
+  await installApplicationMenu(app, () => mainWindow)
+  // After the portable-mode switch, so it reads the brand.json the server writes.
+  brandSource = watchBrandName({ file: brandNameFile(process.env), onChange: applyBrandName })
+  app.on('browser-window-focus', () => brandSource?.refresh())
+  if (shouldInstallTray(process.platform)) {
+    trayController = await installTray({
+      app,
+      desktopRoot: appRoot(),
+      productName: brandAgentName(currentBrandName()),
+      show: () => showMainWindow(mainWindow, app),
+      quit: () => {
+        isQuitting = true
+        app.quit()
+      },
+    }).catch(error => {
+      console.error('[desktop] failed to create Electron tray', error)
+      return null
+    })
+  }
+  await createMainWindow()
+  advertiseToStarCode()
+  scheduleNotificationSmoke({
+    env: process.env,
+    NotificationClass: Notification,
+    onAction: emitNotificationAction,
+  })
+
+  app.on('activate', () => {
+    if (mainWindow) {
+      showMainWindow(mainWindow, app)
+      return
+    }
+    void createMainWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (isQuitting && process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', event => {
+  isQuitting = true
+  if (dataMigration?.running) {
+    event.preventDefault()
+    dataMigration.cancelActive()
+    void dataMigration.wait().then(() => app.quit())
+    return
+  }
+  if (quitCleanupFinished) return
+  event.preventDefault()
+  if (quitCleanupStarted) return
+  quitCleanupStarted = true
+  const cleanupSteps = {
+    window: () => { if (mainWindow) saveWindowState(app, mainWindow) },
+    tray: () => { trayController?.dispose() },
+    terminal: () => { terminalService?.killAll() },
+    preview: () => { previewService?.close() },
+    workspaceBrowser: () => { workspaceBrowserService?.closeAll() },
+    pet: () => { petWindowController?.dispose() },
+  }
+  // A destroyed native view or PTY can throw during cleanup. Keep going so a
+  // failed resource cannot leave every later quit blocked by cleanupStarted.
+  for (const [resource, cleanup] of Object.entries(cleanupSteps)) {
+    try {
+      cleanup()
+    } catch (error) {
+      console.error(`[desktop] ${resource} cleanup failed during quit`, error)
+    }
+  }
+  trayController = null
+  petWindowController = null
+  // Keep Electron (and the server's stdout/stderr pipes) alive until the server
+  // has waited for its CLI children to finish their graceful cleanup. The CLI
+  // owns the launchd-reparented Computer Use helper, so exiting the host first
+  // can strand its active turn across an immediate app restart.
+  void (async () => {
+    try {
+      try {
+        await publicAccessManager?.dispose()
+      } catch {
+        // Provider errors may contain credentials. A tunnel cleanup failure
+        // must never bypass the sidecar's graceful shutdown.
+        console.error('[desktop] public access cleanup failed during quit')
+      }
+      await getServerRuntime().stopAllAndWait()
+    } catch (error) {
+      console.error('[desktop] graceful server shutdown failed', error)
+    } finally {
+      quitCleanupFinished = true
+      app.quit()
+    }
+  })()
+})

@@ -1,0 +1,1187 @@
+import { MODEL_SLOTS, type ModelSlot } from '@/lib/providerModelContext'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { ArrowRight, Check, ChevronDown } from 'lucide-react'
+import {
+  COMPOSER_MENU_ITEM,
+  COMPOSER_MENU_ITEM_ACTIVE,
+  COMPOSER_MENU_SECTION,
+} from '@/components/chat/composerMenuStyles'
+import {
+  BUNDLED_PROVIDER_PRESETS,
+  getBundledPresetReasoningProviderKind,
+} from '../../config/providerPresets'
+import { OFFICIAL_MODELS } from '../../constants/modelCatalog'
+import {
+  OPENAI_OFFICIAL_MODELS,
+  OPENAI_OFFICIAL_PROVIDER_ID,
+} from '../../constants/openaiOfficialProvider'
+import { useTranslation } from '../../i18n'
+import { useChatStore } from '../../stores/chatStore'
+import { useProviderStore } from '../../stores/providerStore'
+import { useStarStore } from '../../stores/starStore'
+import type { StarCatalog, StarChatModel } from '../../api/star'
+import { DRAFT_RUNTIME_SELECTION_KEY, useSessionRuntimeStore } from '../../stores/sessionRuntimeStore'
+import { useSettingsStore } from '../../stores/settingsStore'
+import type { ModelMapping, SavedProvider } from '../../types/provider'
+import type { RuntimeSelection } from '../../types/runtime'
+import type { ModelInfo, ReasoningEffortLevel } from '../../types/settings'
+import { useDismissable } from '@/hooks/useDismissable'
+import { useMobileViewport } from '../../hooks/useMobileViewport'
+import { isDesktopRuntime } from '../../lib/desktopRuntime'
+import {
+  normalizeRuntimeSelection,
+  reconcileRuntimeSelection,
+  resolveDefaultRuntimeSelection,
+  resolveProviderSlotModelId,
+} from '../../lib/runtimeSelection'
+import { useHahaOAuthStore } from '../../stores/hahaOAuthStore'
+import { useHahaOpenAIOAuthStore } from '../../stores/hahaOpenAIOAuthStore'
+import { useHahaGrokOAuthStore } from '../../stores/hahaGrokOAuthStore'
+import {
+  GROK_OFFICIAL_MODELS,
+  GROK_OFFICIAL_PROVIDER_ID,
+} from '../../constants/grokOfficialProvider'
+import { useHahaDeepSeekOAuthStore } from '../../stores/hahaDeepSeekOAuthStore'
+import {
+  DEEPSEEK_ACCOUNT_CATALOG_MODELS,
+  DEEPSEEK_ACCOUNT_PROVIDER_ID,
+  buildDeepSeekAccountProvider,
+} from '../../constants/deepseekAccountProvider'
+import { MobileBottomSheet } from '@/components/ui/MobileBottomSheet'
+import { SearchField } from '@/components/ui/SearchField'
+import { ReasoningEffortPopover } from './ReasoningEffortPopover'
+import { StarModelPanel } from './StarModelPanel'
+import { useModelPolicy } from '../../lib/modelPolicy'
+import { useUIStore } from '../../stores/uiStore'
+import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
+import {
+  getModelReasoningCapabilityOverride,
+  isOpenAIReasoningModel,
+  isModelReasoningEffort,
+  normalizeModelReasoningEffort,
+  resolveModelReasoningProfile,
+} from '../../../../src/shared/modelReasoning'
+
+export type ModelProviderChoice = {
+  providerId: string | null
+  providerName: string
+  isDefault: boolean
+  models: ModelInfo[]
+}
+
+type Props = {
+  value?: string
+  onChange?: (modelId: string) => void
+  /**
+   * Overrides the settings-store catalog for controlled pickers. This keeps
+   * the shared search, portal, and viewport positioning while allowing a
+   * feature to prepend semantic choices such as an inherited model.
+   */
+  models?: ModelInfo[]
+  /** Server-authoritative catalog for delegation, without changing global provider state. */
+  runtimeChoices?: ModelProviderChoice[]
+  ariaLabel?: string
+  appearance?: 'toolbar' | 'field'
+  runtimeSelection?: RuntimeSelection
+  onRuntimeSelectionChange?: (selection: RuntimeSelection) => void
+  runtimeKey?: string
+  lockedProviderId?: string | null
+  disabled?: boolean
+  compact?: boolean
+  fluid?: boolean
+}
+
+export type ModelSelectorHandle = {
+  open: () => void
+}
+
+type DropdownPosition = {
+  top: number | undefined
+  bottom: number | undefined
+  left: number
+  width: number
+  maxHeight: number
+  /** Centred down the window between `top` and `bottom`, whatever its height. */
+  centered?: boolean
+}
+
+const DROPDOWN_WIDTH = 360
+const DROPDOWN_GAP = 8
+const VIEWPORT_MARGIN = 16
+const DROPDOWN_MAX_HEIGHT = 420
+const DROPDOWN_MIN_HEIGHT = 180
+/** The STAR layout adds a brand column, so it needs the room of two lists. */
+const STAR_DROPDOWN_WIDTH = 680
+const STAR_DROPDOWN_MAX_HEIGHT = 520
+const PROVIDER_PRESET_DEFAULT_ENVS = new Map(
+  BUNDLED_PROVIDER_PRESETS.map(preset => [preset.id, preset.defaultEnv ?? {}]),
+)
+
+function getProviderModelCapabilityOverride(
+  provider: SavedProvider,
+  modelId: string,
+): string | undefined {
+  return getModelReasoningCapabilityOverride(
+    modelId,
+    {
+      ...provider.models,
+      haiku: resolveProviderSlotModelId(provider, 'haiku'),
+      sonnet: resolveProviderSlotModelId(provider, 'sonnet'),
+      opus: resolveProviderSlotModelId(provider, 'opus'),
+    },
+    PROVIDER_PRESET_DEFAULT_ENVS.get(provider.presetId) ?? {},
+  )
+}
+
+function officialChoices(
+  providerId: string | null,
+  models: ModelInfo[],
+  isDefault: boolean,
+  officialName: string,
+): ModelProviderChoice {
+  return {
+    providerId,
+    providerName: officialName,
+    isDefault,
+    models,
+  }
+}
+
+function baseModelId(id: string): string {
+  return id.trim().replace(/\[1m\]$/i, '')
+}
+
+/**
+ * The account login keeps the API-key provider's alias rows (slot labels,
+ * reasoning options) for the mapping the user saved in Settings, named the way
+ * the account names its models, followed by
+ * the account models no alias points at. While the account is the active
+ * provider, `availableModels` carries the server's live `/models` listing.
+ */
+function deepSeekAccountChoice(
+  activeId: string | null,
+  providerName: string,
+  labels: Record<ModelSlot, string>,
+  availableModels: ModelInfo[],
+  savedModels: ModelMapping,
+): ModelProviderChoice {
+  const provider = buildDeepSeekAccountProvider(savedModels)
+  const isActive = activeId === DEEPSEEK_ACCOUNT_PROVIDER_ID
+  const catalog = isActive && availableModels.length > 0
+    ? availableModels
+    : DEEPSEEK_ACCOUNT_CATALOG_MODELS
+  const namesByBaseId = new Map(catalog.map((model) => [baseModelId(model.id), model.name]))
+  const models = buildProviderModels(provider, labels).map((model) => ({
+    ...model,
+    name: namesByBaseId.get(baseModelId(model.id)) ?? model.name,
+  }))
+  const mappedBaseIds = new Set(models.map((model) => baseModelId(model.id)))
+  for (const listed of catalog) {
+    if (mappedBaseIds.has(baseModelId(listed.id))) continue
+    mappedBaseIds.add(baseModelId(listed.id))
+    models.push(buildProviderModelRow(provider, listed.id, listed.name, ''))
+  }
+  return {
+    providerId: DEEPSEEK_ACCOUNT_PROVIDER_ID,
+    providerName,
+    isDefault: isActive,
+    models,
+  }
+}
+
+function mergeOfficialModels(availableModels: ModelInfo[]): ModelInfo[] {
+  const merged = [...OFFICIAL_MODELS]
+  const knownIds = new Set(merged.map(model => model.id))
+  for (const model of availableModels) {
+    if (!knownIds.has(model.id)) {
+      knownIds.add(model.id)
+      merged.push(model)
+    }
+  }
+  return merged
+}
+
+function buildProviderModels(
+  provider: SavedProvider,
+  labels: Record<ModelSlot, string>,
+): ModelInfo[] {
+  const entries = MODEL_SLOTS.map(slot => ({
+    id: resolveProviderSlotModelId(provider, slot),
+    label: labels[slot],
+  }))
+
+  const byId = new Map<string, { id: string; labels: string[] }>()
+  for (const entry of entries) {
+    if (!entry.id) continue
+    const existing = byId.get(entry.id)
+    if (existing) {
+      if (!existing.labels.includes(entry.label)) {
+        existing.labels.push(entry.label)
+      }
+      continue
+    }
+    byId.set(entry.id, { id: entry.id, labels: [entry.label] })
+  }
+
+  return [...byId.values()].map((entry) =>
+    buildProviderModelRow(provider, entry.id, entry.id, entry.labels.join(' · ')))
+}
+
+function buildProviderModelRow(
+  provider: SavedProvider,
+  id: string,
+  name: string,
+  description: string,
+): ModelInfo {
+  const reasoningProfile = resolveModelReasoningProfile(
+    id,
+    provider.apiFormat,
+    getProviderModelCapabilityOverride(provider, id),
+    getBundledPresetReasoningProviderKind(provider.presetId),
+  )
+  return {
+    id,
+    name,
+    description,
+    context: '',
+    supportedReasoningEfforts: [...(reasoningProfile?.supportedReasoningEfforts ?? [])],
+    ...(reasoningProfile?.defaultReasoningEffort
+      ? { defaultReasoningEffort: reasoningProfile.defaultReasoningEffort }
+      : {}),
+  }
+}
+
+function buildProviderChoices(
+  providers: SavedProvider[],
+  activeId: string | null,
+  availableModels: ModelInfo[],
+  officialName: string,
+  openAIOfficialName: string,
+  grokOfficialName: string,
+  deepSeekAccountName: string,
+  deepSeekAccountModels: ModelMapping,
+  labels: Record<ModelSlot, string>,
+  claudeOfficialLoggedIn: boolean,
+  openAIOfficialLoggedIn: boolean,
+  grokOfficialLoggedIn: boolean,
+  deepSeekAccountLoggedIn: boolean,
+  starModels: readonly StarChatModel[] = [],
+): ModelProviderChoice[] {
+  const claudeOfficialModels = activeId === null && availableModels.length > 0
+    ? mergeOfficialModels(availableModels)
+    : OFFICIAL_MODELS
+  const openAIOfficialModels = activeId === OPENAI_OFFICIAL_PROVIDER_ID && availableModels.length > 0
+    ? availableModels
+    : OPENAI_OFFICIAL_MODELS
+  const grokOfficialModels = activeId === GROK_OFFICIAL_PROVIDER_ID && availableModels.length > 0
+    ? availableModels
+    : GROK_OFFICIAL_MODELS
+
+  const choices: ModelProviderChoice[] = []
+
+  if (claudeOfficialLoggedIn) {
+    choices.push(officialChoices(null, claudeOfficialModels, activeId === null, officialName))
+  }
+  if (openAIOfficialLoggedIn) {
+    choices.push(officialChoices(
+      OPENAI_OFFICIAL_PROVIDER_ID,
+      openAIOfficialModels,
+      activeId === OPENAI_OFFICIAL_PROVIDER_ID,
+      openAIOfficialName,
+    ))
+  }
+  if (grokOfficialLoggedIn) {
+    choices.push(officialChoices(
+      GROK_OFFICIAL_PROVIDER_ID,
+      grokOfficialModels,
+      activeId === GROK_OFFICIAL_PROVIDER_ID,
+      grokOfficialName,
+    ))
+  }
+  if (deepSeekAccountLoggedIn) {
+    choices.push(deepSeekAccountChoice(activeId, deepSeekAccountName, labels, availableModels, deepSeekAccountModels))
+  }
+
+  for (const provider of providers) {
+    choices.push({
+      providerId: provider.id,
+      providerName: provider.name,
+      isDefault: activeId === provider.id,
+      models: provider.presetId === STAR_PRESET_ID
+        ? buildStarProviderModels(provider, labels, starModels)
+        : buildProviderModels(provider, labels),
+    })
+  }
+
+  return choices
+}
+
+const STAR_PRESET_ID = 'star-saas'
+const EMPTY_STAR_MODELS: readonly StarChatModel[] = []
+const EMPTY_STAR_BRANDS: StarCatalog['brands'] = []
+
+/** Slot rows first (named as the catalog names them), then every other STAR chat model. */
+function buildStarProviderModels(
+  provider: SavedProvider,
+  labels: Record<ModelSlot, string>,
+  starModels: readonly StarChatModel[],
+): ModelInfo[] {
+  const byId = new Map(starModels.map(model => [model.id, model]))
+  const rows = buildProviderModels(provider, labels).map(model => {
+    const entry = byId.get(model.id)
+    return entry ? { ...model, name: entry.name } : model
+  })
+  const seen = new Set(rows.map(model => model.id))
+  for (const model of starModels) {
+    if (seen.has(model.id)) continue
+    seen.add(model.id)
+    const price = model.credits ? ` · ${model.credits} 积分/次` : ''
+    rows.push(buildProviderModelRow(provider, model.id, model.name, `${model.brandName}${price}`))
+  }
+  return rows
+}
+
+function modelMatchesSearch(model: ModelInfo, query: string): boolean {
+  return [model.id, model.name, model.description]
+    .some(value => value.toLocaleLowerCase().includes(query))
+}
+
+export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function ModelSelector({
+  value,
+  onChange,
+  models,
+  runtimeChoices,
+  ariaLabel,
+  appearance = 'toolbar',
+  runtimeSelection: controlledRuntimeSelection,
+  onRuntimeSelectionChange,
+  runtimeKey,
+  lockedProviderId,
+  disabled = false,
+  compact = false,
+  fluid = false,
+}: Props = {}, selectorRef) {
+  const t = useTranslation()
+  const isMobileBrowser = useMobileViewport() && !isDesktopRuntime()
+  const {
+    currentModel: storeModel,
+    availableModels,
+    effortLevel,
+    activeProviderName,
+    setModel,
+  } = useSettingsStore()
+  const {
+    providers,
+    activeId,
+    deepSeekAccountModels,
+    hasLoadedProviders,
+    isLoading: providersLoading,
+    fetchProviders,
+  } = useProviderStore()
+  const claudeOAuthStatus = useHahaOAuthStore((s) => s.status)
+  const fetchClaudeOAuthStatus = useHahaOAuthStore((s) => s.fetchStatus)
+  const openAIOAuthStatus = useHahaOpenAIOAuthStore((s) => s.status)
+  const fetchOpenAIOAuthStatus = useHahaOpenAIOAuthStore((s) => s.fetchStatus)
+  const grokOAuthStatus = useHahaGrokOAuthStore((s) => s.status)
+  const fetchGrokOAuthStatus = useHahaGrokOAuthStore((s) => s.fetchStatus)
+  const deepSeekOAuthStatus = useHahaDeepSeekOAuthStore((s) => s.status)
+  const fetchDeepSeekOAuthStatus = useHahaDeepSeekOAuthStore((s) => s.fetchStatus)
+  const runtimeSelection = useSessionRuntimeStore((state) =>
+    runtimeKey ? state.selections[runtimeKey] : undefined,
+  )
+  const [open, setOpen] = useState(false)
+  const [effortOpen, setEffortOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [dropdownPosition, setDropdownPosition] = useState<DropdownPosition | null>(null)
+  const ref = useRef<HTMLDivElement>(null)
+  const effortButtonRef = useRef<HTMLButtonElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const requestedProvidersRef = useRef(false)
+  const requestedOAuthStatusRef = useRef(false)
+
+  const EFFORT_OPTIONS: { value: ReasoningEffortLevel; label: string }[] = [
+    { value: 'low', label: t('settings.general.effort.low') },
+    { value: 'medium', label: t('settings.general.effort.medium') },
+    { value: 'high', label: t('settings.general.effort.high') },
+    { value: 'xhigh', label: t('settings.general.effort.xhigh') },
+    { value: 'max', label: t('settings.general.effort.max') },
+  ]
+  const effortLabels: Record<ReasoningEffortLevel, string> = {
+    low: t('settings.general.effort.low'),
+    medium: t('settings.general.effort.medium'),
+    high: t('settings.general.effort.high'),
+    xhigh: t('settings.general.effort.xhigh'),
+    max: t('settings.general.effort.max'),
+  }
+
+  const isControlled = value !== undefined
+  const isRuntimeScoped =
+    !isControlled &&
+    (runtimeKey !== undefined || onRuntimeSelectionChange !== undefined)
+  const canEditRuntimeEffort = runtimeKey !== undefined
+
+  // The STAR account's whole chat catalog, listed under the STAR provider; its
+  // brands make the left column of the STAR layout.
+  const starChatModels = useStarStore(s => s.catalog?.chat ?? EMPTY_STAR_MODELS)
+  const starBrands = useStarStore(s => s.catalog?.brands ?? EMPTY_STAR_BRANDS)
+  const starRecommendedId = useStarStore(s => s.status?.provider.mainModel ?? null)
+  const starProviderId = providers.find(provider => provider.presetId === STAR_PRESET_ID)?.id ?? null
+  // `star-only` (the STAR app): the picker offers the STAR catalog and nothing
+  // else, and "configure a provider" becomes the STAR sign-in.
+  const starOnly = useModelPolicy() === 'star-only' && runtimeChoices === undefined
+  const showStarPanel = isRuntimeScoped && !isMobileBrowser && runtimeChoices === undefined &&
+    starProviderId !== null && starChatModels.length > 0 &&
+    (lockedProviderId === undefined || lockedProviderId === starProviderId)
+
+  useEffect(() => {
+    if (
+      runtimeChoices !== undefined ||
+      !isRuntimeScoped ||
+      hasLoadedProviders ||
+      providersLoading ||
+      requestedProvidersRef.current
+    ) return
+    requestedProvidersRef.current = true
+    void fetchProviders()
+  }, [fetchProviders, hasLoadedProviders, isRuntimeScoped, providersLoading, runtimeChoices])
+
+  useEffect(() => {
+    if (runtimeChoices !== undefined || !isRuntimeScoped || !open || requestedOAuthStatusRef.current) return
+    requestedOAuthStatusRef.current = true
+    void fetchClaudeOAuthStatus()
+    void fetchOpenAIOAuthStatus()
+    void fetchGrokOAuthStatus()
+    void fetchDeepSeekOAuthStatus()
+  }, [
+    fetchClaudeOAuthStatus,
+    fetchDeepSeekOAuthStatus,
+    fetchGrokOAuthStatus,
+    fetchOpenAIOAuthStatus,
+    isRuntimeScoped,
+    runtimeChoices,
+    open,
+  ])
+
+  const closeSelector = useCallback(() => setOpen(false), [])
+
+  // `ref` is the trigger row; `dropdownRef` is the portalled panel (or the
+  // mobile sheet). `stopEscapePropagation` keeps one Escape from closing both
+  // this dropdown and a dialog it was opened inside.
+  useDismissable({
+    open,
+    refs: [ref, dropdownRef],
+    onDismiss: closeSelector,
+    stopEscapePropagation: true,
+  })
+
+  const updateDropdownPosition = useCallback(() => {
+    const anchor = ref.current
+    if (!anchor) return
+
+    const rect = anchor.getBoundingClientRect()
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+    const width = Math.min(showStarPanel ? STAR_DROPDOWN_WIDTH : DROPDOWN_WIDTH, Math.max(0, viewportWidth - VIEWPORT_MARGIN * 2))
+    const preferredHeight = showStarPanel ? STAR_DROPDOWN_MAX_HEIGHT : DROPDOWN_MAX_HEIGHT
+
+    // On a composer the picker is centred, never hung off the trigger: across
+    // the card, which is centred in the page, and down the window, so it gets
+    // its full height wherever the card sits. Anchored to the trigger, the
+    // home composer (just above the middle) left it a short, clipped strip.
+    const card = anchor.closest('.glass-panel--composer')
+    if (card) {
+      const box = card.getBoundingClientRect()
+      setDropdownPosition({
+        top: VIEWPORT_MARGIN,
+        bottom: VIEWPORT_MARGIN,
+        left: Math.round(Math.min(
+          Math.max(VIEWPORT_MARGIN, box.left + box.width / 2 - width / 2),
+          Math.max(VIEWPORT_MARGIN, viewportWidth - width - VIEWPORT_MARGIN),
+        )),
+        width,
+        maxHeight: Math.max(0, Math.min(preferredHeight, viewportHeight - VIEWPORT_MARGIN * 2)),
+        centered: true,
+      })
+      return
+    }
+
+    const left = Math.min(
+      Math.max(VIEWPORT_MARGIN, rect.right - width),
+      Math.max(VIEWPORT_MARGIN, viewportWidth - width - VIEWPORT_MARGIN),
+    )
+    const spaceBelow = viewportHeight - rect.bottom - DROPDOWN_GAP - VIEWPORT_MARGIN
+    const spaceAbove = rect.top - DROPDOWN_GAP - VIEWPORT_MARGIN
+    const placeBelow = spaceBelow >= DROPDOWN_MIN_HEIGHT || spaceBelow >= spaceAbove
+    const availableHeight = Math.max(
+      DROPDOWN_MIN_HEIGHT,
+      placeBelow ? spaceBelow : spaceAbove,
+    )
+    const maxHeight = Math.min(preferredHeight, availableHeight)
+
+    setDropdownPosition({
+      top: placeBelow ? rect.bottom + DROPDOWN_GAP : undefined,
+      bottom: placeBelow ? undefined : (viewportHeight - rect.top + DROPDOWN_GAP),
+      left,
+      width,
+      maxHeight,
+    })
+  }, [showStarPanel])
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setDropdownPosition(null)
+      return
+    }
+    updateDropdownPosition()
+  }, [open, updateDropdownPosition])
+
+  useEffect(() => {
+    if (!open && searchQuery) setSearchQuery('')
+  }, [open, searchQuery])
+
+  useEffect(() => {
+    if (!open) return
+    window.addEventListener('resize', updateDropdownPosition)
+    window.addEventListener('scroll', updateDropdownPosition, true)
+    return () => {
+      window.removeEventListener('resize', updateDropdownPosition)
+      window.removeEventListener('scroll', updateDropdownPosition, true)
+    }
+  }, [open, updateDropdownPosition])
+
+
+  const roleLabels = useMemo(
+    () => ({
+      main: t('settings.providers.mainModel'),
+      fable: t('settings.providers.fableModel'),
+      haiku: t('settings.providers.haikuModel'),
+      sonnet: t('settings.providers.sonnetModel'),
+      opus: t('settings.providers.opusModel'),
+    }),
+    [t],
+  )
+
+  const providerChoices = useMemo(() => {
+    if (runtimeChoices) return runtimeChoices
+    const choices = buildProviderChoices(
+      providers,
+      activeId,
+      availableModels,
+      t('settings.providers.officialName'),
+      t('settings.providers.openaiOfficialName'),
+      t('settings.providers.grokOfficialName'),
+      t('settings.providers.deepseekAccountName'),
+      deepSeekAccountModels,
+      roleLabels,
+      claudeOAuthStatus?.loggedIn === true,
+      openAIOAuthStatus?.loggedIn === true,
+      grokOAuthStatus?.loggedIn === true,
+      deepSeekOAuthStatus?.loggedIn === true,
+      starChatModels,
+    )
+    return starOnly ? choices.filter(choice => starProviderId !== null && choice.providerId === starProviderId) : choices
+  }, [
+    runtimeChoices,
+    activeId,
+    availableModels,
+    providers,
+    deepSeekAccountModels,
+    roleLabels,
+    t,
+    claudeOAuthStatus,
+    grokOAuthStatus,
+    openAIOAuthStatus,
+    deepSeekOAuthStatus,
+    starChatModels,
+    starOnly,
+    starProviderId,
+  ])
+  const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase()
+  const selectableModels = isControlled && models ? models : availableModels
+  const filteredProviderChoices = useMemo(() => {
+    const choices = lockedProviderId === undefined ? providerChoices : providerChoices.filter(choice => choice.providerId === lockedProviderId)
+    if (!normalizedSearchQuery) return choices
+
+    return choices.flatMap((choice) => {
+      const providerMatches = choice.providerName.toLocaleLowerCase().includes(normalizedSearchQuery)
+      const models = providerMatches
+        ? choice.models
+        : choice.models.filter(model => modelMatchesSearch(model, normalizedSearchQuery))
+      return models.length > 0 ? [{ ...choice, models }] : []
+    })
+  }, [normalizedSearchQuery, providerChoices, lockedProviderId])
+  const filteredAvailableModels = useMemo(
+    () => normalizedSearchQuery
+      ? selectableModels.filter(model => modelMatchesSearch(model, normalizedSearchQuery))
+      : selectableModels,
+    [normalizedSearchQuery, selectableModels],
+  )
+
+  const selectedModel = isControlled
+    ? selectableModels.find((model) => model.id === value) || null
+    : storeModel
+
+  const requestedRuntimeSelection = isRuntimeScoped
+    ? controlledRuntimeSelection ?? runtimeSelection ?? resolveDefaultRuntimeSelection(
+      activeId,
+      activeProviderName,
+      providers,
+      storeModel?.id,
+    )
+    : null
+  const resolvedRuntimeSelection = runtimeChoices !== undefined
+    ? requestedRuntimeSelection
+    : requestedRuntimeSelection
+    ? reconcileRuntimeSelection(requestedRuntimeSelection, {
+      providers, activeId, hasLoadedProviders: hasLoadedProviders && lockedProviderId === undefined,
+      currentModelId: storeModel?.id,
+      defaultEffortLevel: effortLevel,
+    })
+    : null
+  // OAuth catalogs are loaded lazily. Their absence must not erase an already
+  // selected model, even while another provider is the global default.
+  const activeRuntimeSelection = resolvedRuntimeSelection && (
+    controlledRuntimeSelection || runtimeSelection ||
+    providerChoices.some((choice) => choice.providerId === resolvedRuntimeSelection.providerId)
+  ) && (!starOnly || resolvedRuntimeSelection.providerId === starProviderId)
+    ? resolvedRuntimeSelection
+    : null
+
+  const selectedProviderChoice = activeRuntimeSelection
+    ? providerChoices.find((choice) => choice.providerId === activeRuntimeSelection.providerId)
+      ?? (activeRuntimeSelection.providerId === null
+        ? officialChoices(null, mergeOfficialModels(activeId === null ? availableModels : []), activeId === null, t('settings.providers.officialName'))
+        : activeRuntimeSelection.providerId === OPENAI_OFFICIAL_PROVIDER_ID
+          ? officialChoices(OPENAI_OFFICIAL_PROVIDER_ID, activeId === OPENAI_OFFICIAL_PROVIDER_ID && availableModels.length ? availableModels : OPENAI_OFFICIAL_MODELS, activeId === OPENAI_OFFICIAL_PROVIDER_ID, t('settings.providers.openaiOfficialName'))
+          : activeRuntimeSelection.providerId === GROK_OFFICIAL_PROVIDER_ID
+            ? officialChoices(GROK_OFFICIAL_PROVIDER_ID, activeId === GROK_OFFICIAL_PROVIDER_ID && availableModels.length ? availableModels : GROK_OFFICIAL_MODELS, activeId === GROK_OFFICIAL_PROVIDER_ID, t('settings.providers.grokOfficialName'))
+            : activeRuntimeSelection.providerId === DEEPSEEK_ACCOUNT_PROVIDER_ID
+              ? deepSeekAccountChoice(activeId, t('settings.providers.deepseekAccountName'), roleLabels, availableModels, deepSeekAccountModels)
+              : null)
+    : null
+
+  const selectedRuntimeModel = activeRuntimeSelection
+    ? {
+      ...(selectedProviderChoice?.models.find((model) => model.id === activeRuntimeSelection.modelId)
+        // Account defaults can change their 1M marker without changing the
+        // catalog identity. Resolve metadata while retaining the session ID.
+        ?? (activeRuntimeSelection.providerId === DEEPSEEK_ACCOUNT_PROVIDER_ID
+          ? selectedProviderChoice?.models.find((model) => baseModelId(model.id) === baseModelId(activeRuntimeSelection.modelId))
+          : undefined)
+        ?? {
+          name: activeRuntimeSelection.modelId,
+          description: '',
+          context: '',
+        }),
+      id: activeRuntimeSelection.modelId,
+    }
+    : null
+
+  const selectedRuntimeProvider = activeRuntimeSelection?.providerId
+    ? providers.find((provider) => provider.id === activeRuntimeSelection.providerId) ?? null
+    : null
+  const runtimeEffortSuppressedByProvider =
+    selectedRuntimeProvider?.disableExperimentalBetas === true &&
+    (selectedRuntimeProvider.apiFormat ?? 'anthropic') === 'anthropic' &&
+    !isOpenAIReasoningModel(selectedRuntimeModel?.id ?? '')
+
+  const needsProviderConfiguration = isRuntimeScoped && !activeRuntimeSelection && providerChoices.length === 0
+  const buttonModelLabel = isRuntimeScoped
+    ? selectedRuntimeModel?.name
+      ?? (needsProviderConfiguration ? t(starOnly ? 'model.signInStar' : 'model.configureProvider') : t('model.selectModel'))
+    : selectedModel?.name ?? t('model.selectModel')
+  const buttonProviderLabel = isRuntimeScoped
+    ? selectedProviderChoice?.providerName ?? null
+    : null
+  const supportedRuntimeEfforts = selectedRuntimeModel?.supportedReasoningEfforts
+  const requestedRuntimeEffort = activeRuntimeSelection?.effortLevel ?? effortLevel
+  const selectedRuntimeEffort = selectedRuntimeModel && !runtimeEffortSuppressedByProvider
+    ? supportedRuntimeEfforts?.length === 0
+      ? undefined
+      : supportedRuntimeEfforts === undefined || supportedRuntimeEfforts.includes(requestedRuntimeEffort)
+        ? requestedRuntimeEffort
+        : selectedRuntimeModel.defaultReasoningEffort ?? supportedRuntimeEfforts[0]
+    : undefined
+  const runtimeEffortOptions = supportedRuntimeEfforts === undefined
+    ? EFFORT_OPTIONS.filter((option) => option.value !== 'xhigh')
+    : EFFORT_OPTIONS.filter((option) => supportedRuntimeEfforts.includes(option.value))
+  const showEffortPill = canEditRuntimeEffort && !!selectedRuntimeEffort && runtimeEffortOptions.length > 0
+  const showOpenAIFastMode = activeRuntimeSelection?.providerId === OPENAI_OFFICIAL_PROVIDER_ID && lockedProviderId === undefined
+
+  const navigateToProviderSettings = useCallback(() => {
+    setOpen(false)
+    // STAR-only: there is no provider to configure, only the account to sign in to.
+    if (starOnly && !useStarStore.getState().status?.signedIn) {
+      useStarStore.getState().openLogin()
+      return
+    }
+    useUIStore.getState().setPendingSettingsTab('providers')
+    useTabStore.getState().openTab(SETTINGS_TAB_ID, t('sidebar.settings'), 'settings')
+  }, [starOnly, t])
+
+  const openSelector = useCallback(() => {
+    if (disabled) return
+    setEffortOpen(false)
+
+    if (runtimeChoices !== undefined || !isRuntimeScoped || providerChoices.length > 0) {
+      setOpen(true)
+      return
+    }
+
+    if (starOnly) {
+      // Official logins and saved providers are not offered, so only the STAR
+      // provider (created at sign-in) can fill the list.
+      void (async () => {
+        const providerState = useProviderStore.getState()
+        if (!providerState.hasLoadedProviders) await providerState.fetchProviders()
+        if (useProviderStore.getState().providers.some(provider => provider.presetId === STAR_PRESET_ID)) setOpen(true)
+        else navigateToProviderSettings()
+      })()
+      return
+    }
+
+    const claudeStatus = useHahaOAuthStore.getState().status
+    const openAIStatus = useHahaOpenAIOAuthStore.getState().status
+    const grokStatus = useHahaGrokOAuthStore.getState().status
+    const deepSeekStatus = useHahaDeepSeekOAuthStore.getState().status
+    const statuses = [claudeStatus, openAIStatus, grokStatus, deepSeekStatus]
+    const providerState = useProviderStore.getState()
+    if (providerState.providers.length > 0) {
+      setOpen(true)
+      return
+    }
+    if (statuses.some((status) => status?.loggedIn === true)) {
+      setOpen(true)
+      return
+    }
+    if (providerState.hasLoadedProviders && statuses.every((status) => status !== null)) {
+      navigateToProviderSettings()
+      return
+    }
+
+    void (async () => {
+      const latestProviderState = useProviderStore.getState()
+      if (!latestProviderState.hasLoadedProviders) {
+        await latestProviderState.fetchProviders()
+      }
+      if (useProviderStore.getState().providers.length > 0) {
+        setOpen(true)
+        return
+      }
+
+      requestedOAuthStatusRef.current = true
+      await Promise.all([
+        fetchClaudeOAuthStatus(),
+        fetchOpenAIOAuthStatus(),
+        fetchGrokOAuthStatus(),
+        fetchDeepSeekOAuthStatus(),
+      ])
+      const hasOfficialLogin = [
+        useHahaOAuthStore.getState().status,
+        useHahaOpenAIOAuthStore.getState().status,
+        useHahaGrokOAuthStore.getState().status,
+        useHahaDeepSeekOAuthStore.getState().status,
+      ].some((status) => status?.loggedIn === true)
+      if (hasOfficialLogin) {
+        setOpen(true)
+      } else {
+        navigateToProviderSettings()
+      }
+    })()
+  }, [
+    disabled,
+    fetchClaudeOAuthStatus,
+    fetchDeepSeekOAuthStatus,
+    fetchGrokOAuthStatus,
+    fetchOpenAIOAuthStatus,
+    isRuntimeScoped,
+    navigateToProviderSettings,
+    providerChoices.length,
+    runtimeChoices,
+    starOnly,
+  ])
+
+  useImperativeHandle(selectorRef, () => ({
+    open: openSelector,
+  }), [openSelector])
+
+  const handleRuntimeSelect = (selection: RuntimeSelection) => {
+    if (lockedProviderId !== undefined && selection.providerId !== lockedProviderId) return
+    const provider = providers.find((entry) => entry.id === selection.providerId)
+    const normalizedSelection = runtimeChoices !== undefined ? selection : normalizeRuntimeSelection(
+      selection,
+      provider?.apiFormat,
+      provider ? getBundledPresetReasoningProviderKind(provider.presetId) : undefined,
+    )
+    if (lockedProviderId !== undefined) normalizedSelection.effortLevel = activeRuntimeSelection?.effortLevel
+    onRuntimeSelectionChange?.(normalizedSelection)
+    if (runtimeKey) {
+      useSessionRuntimeStore.getState().setSelection(runtimeKey, normalizedSelection)
+      if (runtimeKey !== DRAFT_RUNTIME_SELECTION_KEY) {
+        useChatStore.getState().setSessionRuntime(runtimeKey, normalizedSelection)
+      }
+    }
+    setOpen(false)
+  }
+
+  // The STAR relay bills per call at the model's price; effort does not change it.
+  const starEffortCredits = activeRuntimeSelection && activeRuntimeSelection.providerId === starProviderId
+    ? starChatModels.find(model => model.id === activeRuntimeSelection.modelId)?.credits
+    : undefined
+  const starEffortFootnote = activeRuntimeSelection && activeRuntimeSelection.providerId === starProviderId && starProviderId !== null
+    ? `STAR 按调用次数计费${starEffortCredits ? `，每次 ${starEffortCredits} 积分` : ''}；强度越高思考越深入、回答越慢，单价不变`
+    : undefined
+
+  const handleRuntimeEffortSelect = (level: ReasoningEffortLevel) => {
+    if (!activeRuntimeSelection || lockedProviderId !== undefined) return
+    handleRuntimeSelect({
+      ...activeRuntimeSelection,
+      effortLevel: level,
+    })
+  }
+
+  const handleOpenAIFastModeChange = (enabled: boolean) => {
+    if (!activeRuntimeSelection || !showOpenAIFastMode) return
+    handleRuntimeSelect({ ...activeRuntimeSelection, openAIFastMode: enabled })
+  }
+
+  /** Select `model` of `choice`, keeping a compatible reasoning effort. */
+  const pickRuntimeModel = (choice: ModelProviderChoice, model: ModelInfo) => {
+    const supportedEfforts = model.supportedReasoningEfforts
+    const explicitEffort = activeRuntimeSelection?.effortLevel
+    const selectedProvider = providers.find(
+      (provider) => provider.id === choice.providerId,
+    )
+    const normalizedProviderEffort = explicitEffort &&
+      isModelReasoningEffort(explicitEffort)
+      ? normalizeModelReasoningEffort(
+          model.id,
+          explicitEffort,
+          selectedProvider?.apiFormat,
+          selectedProvider
+            ? getProviderModelCapabilityOverride(selectedProvider, model.id)
+            : undefined,
+          selectedProvider
+            ? getBundledPresetReasoningProviderKind(selectedProvider.presetId)
+            : undefined,
+        )
+      : undefined
+    const supportedProviderEffort = normalizedProviderEffort && (
+      supportedEfforts === undefined ||
+      supportedEfforts.includes(normalizedProviderEffort)
+    )
+      ? normalizedProviderEffort
+      : undefined
+    const nextEffort = supportedEfforts === undefined
+      ? explicitEffort ?? effortLevel
+      : supportedEfforts.length
+        ? supportedProviderEffort
+          ?? (explicitEffort && supportedEfforts.includes(explicitEffort)
+          ? explicitEffort
+          : supportedEfforts.includes(effortLevel)
+            ? effortLevel
+            : model.defaultReasoningEffort ?? supportedEfforts[0])
+        : undefined
+    handleRuntimeSelect({
+      providerId: choice.providerId,
+      modelId: model.id,
+      ...(nextEffort ? { effortLevel: nextEffort } : {}),
+      ...(choice.providerId === OPENAI_OFFICIAL_PROVIDER_ID &&
+        activeRuntimeSelection?.providerId === OPENAI_OFFICIAL_PROVIDER_ID &&
+        activeRuntimeSelection.openAIFastMode !== undefined
+        ? { openAIFastMode: activeRuntimeSelection.openAIFastMode }
+        : {}),
+    })
+  }
+
+  const hasMatchingModels = isRuntimeScoped
+    ? filteredProviderChoices.length > 0
+    : filteredAvailableModels.length > 0
+  const searchField = (
+    <SearchField
+      value={searchQuery}
+      onChange={setSearchQuery}
+      label={t('model.searchPlaceholder')}
+      placeholder={t('model.searchPlaceholder')}
+      clearLabel={t('model.clearSearch')}
+      size={isMobileBrowser ? 'xl' : 'md'}
+      autoFocus={!isMobileBrowser}
+    />
+  )
+
+  const dropdownContent = showStarPanel && starProviderId !== null ? (
+    <>
+      <div className="flex-none border-b border-[var(--color-border)] px-1 pb-1.5">
+        <div className={COMPOSER_MENU_SECTION}>
+          {t('model.configuration')}
+        </div>
+        {searchField}
+      </div>
+      <StarModelPanel
+        choices={lockedProviderId === undefined ? providerChoices : providerChoices.filter(choice => choice.providerId === lockedProviderId)}
+        starProviderId={starProviderId}
+        starModels={starChatModels}
+        brands={starBrands}
+        recommendedId={starRecommendedId}
+        query={normalizedSearchQuery}
+        isSelected={(providerId, modelId) => activeRuntimeSelection?.providerId === providerId && activeRuntimeSelection.modelId === modelId}
+        onPick={pickRuntimeModel}
+        maxHeight={Math.max(200, (dropdownPosition?.maxHeight ?? STAR_DROPDOWN_MAX_HEIGHT) - 96)}
+      />
+    </>
+  ) : (
+    <>
+      {/* The header stays OUTSIDE the scroll region: a sticky header inside
+          `overflow-y-auto` depends on the engine compositing it above the
+          scrolling layer, and on the desktop shell scrolled items paint
+          through it (and above the panel edge). As a sibling above the
+          scrollport, the list is hard-clipped below the header instead. */}
+      {!isMobileBrowser && (
+        <div className="flex-none border-b border-[var(--color-border)] px-1 pb-1.5">
+          <div className={COMPOSER_MENU_SECTION}>
+            {t('model.configuration')}
+          </div>
+          {searchField}
+        </div>
+      )}
+      <div className={`overflow-y-auto ${isMobileBrowser ? 'p-1' : 'min-h-0 flex-1 p-1'}`}>
+        {!hasMatchingModels && (
+          <div
+            role="status"
+            className={`flex items-center justify-center px-4 text-center text-[13px] text-[var(--color-text-tertiary)] ${isMobileBrowser ? 'min-h-28' : 'min-h-24'}`}
+          >
+            {t('model.noMatches')}
+          </div>
+        )}
+
+        {isRuntimeScoped ? (
+          <div className="space-y-1">
+            {filteredProviderChoices.map((choice) => (
+              <div key={choice.providerId ?? 'official'}>
+                <div className={`flex items-center justify-between gap-2 ${COMPOSER_MENU_SECTION}`}>
+                  <span className="truncate">
+                    {choice.providerName}
+                  </span>
+                  {choice.isDefault && (
+                    <span className="flex-shrink-0 font-normal">
+                      {t('settings.providers.default')}
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-px">
+                  {choice.models.map((model) => {
+                    const isSelected =
+                      activeRuntimeSelection?.providerId === choice.providerId &&
+                      activeRuntimeSelection.modelId === model.id
+                    return (
+                      <button
+                        key={`${choice.providerId ?? 'official'}:${model.id}`}
+                        onClick={() => pickRuntimeModel(choice, model)}
+                        aria-current={isSelected || undefined}
+                        className={`${COMPOSER_MENU_ITEM} ${isMobileBrowser ? 'min-h-[56px] py-3' : ''} ${isSelected ? COMPOSER_MENU_ITEM_ACTIVE : ''}`}
+                      >
+                        <div className="grid min-w-0 flex-1 gap-px">
+                          {/* Model ids are identifiers, so they sit in the
+                              mono face alongside paths and token counts. */}
+                          <div className="truncate font-mono text-[13px] text-[var(--color-text-primary)]">
+                            {model.name}
+                          </div>
+                          {model.description && (
+                            <div className="truncate pr-[6px] text-xs text-[var(--color-text-tertiary)]">
+                              {model.description}
+                            </div>
+                          )}
+                        </div>
+
+                        {isSelected && (
+                          <Check aria-hidden="true" size={14} strokeWidth={2} className="flex-shrink-0 text-[var(--color-brand)]" />
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-px">
+            {filteredAvailableModels.map((model) => {
+              const isSelected = model.id === selectedModel?.id
+              return (
+                <button
+                  key={model.id}
+                  onClick={() => {
+                    if (isControlled) {
+                      onChange?.(model.id)
+                    } else {
+                      void setModel(model.id)
+                    }
+                    setOpen(false)
+                  }}
+                  aria-current={isSelected || undefined}
+                  className={`${COMPOSER_MENU_ITEM} ${isMobileBrowser ? 'min-h-[56px] py-3' : ''} ${isSelected ? COMPOSER_MENU_ITEM_ACTIVE : ''}`}
+                >
+                  <div className="grid min-w-0 flex-1 gap-px">
+                    <div className="truncate font-mono text-[13px] text-[var(--color-text-primary)]">{model.name}</div>
+                    {model.description && (
+                      <div className="truncate text-xs text-[var(--color-text-tertiary)]">
+                        {model.description}
+                      </div>
+                    )}
+                  </div>
+
+                  {isSelected && (
+                    <Check aria-hidden="true" size={14} strokeWidth={2} className="flex-shrink-0 text-[var(--color-brand)]" />
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+    </>
+  )
+
+  const dropdown = open && dropdownPosition
+    ? isMobileBrowser ? (
+      <MobileBottomSheet
+        open={open}
+        onClose={() => setOpen(false)}
+        title={t('model.configuration')}
+        closeLabel={t('tabs.close')}
+        ariaLabel={t('model.configuration')}
+        headerExtra={searchField}
+        contentClassName="p-1"
+        panelRef={dropdownRef}
+        testId="model-selector-dropdown"
+      >
+        {dropdownContent}
+      </MobileBottomSheet>
+    ) : createPortal(
+      <div
+        ref={dropdownRef}
+        data-testid="model-selector-dropdown"
+        className="fixed z-[var(--z-dropdown)] flex flex-col overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] shadow-[var(--shadow-dropdown)]"
+        style={{
+          top: dropdownPosition.top,
+          bottom: dropdownPosition.bottom,
+          left: dropdownPosition.left,
+          width: dropdownPosition.width,
+          maxHeight: dropdownPosition.maxHeight,
+          // The modal-dialog centring: pinned to both edges, sized to its
+          // content, auto margins split what is left.
+          ...(dropdownPosition.centered ? { height: 'fit-content', marginTop: 'auto', marginBottom: 'auto' } : {}),
+        }}
+      >
+        {dropdownContent}
+      </div>,
+      document.body,
+    )
+    : null
+
+  return (
+    <div
+      data-testid="model-selector-shell"
+      className={`relative min-w-0 ${appearance === 'field' ? 'flex-1' : fluid ? 'shrink' : 'shrink-0'}`}
+    >
+      {/* No fill at rest: on the composer row the model name is type, not a
+          control chip — the handoff reserves filled pills for the permission
+          and context chips and gives this one a hover ground only. */}
+      {/* On the phone composer this sits between two 44px buttons and opens a
+          bottom sheet, so both halves stretch to the same 44px touch target
+          `PermissionModeSelector` uses; `compact` alone would also shrink the
+          desktop composer, which narrows for the right panel, not for touch. */}
+      <div
+        ref={ref}
+        className={`flex min-w-0 items-stretch transition-colors ${
+          appearance === 'field'
+            ? 'h-10 w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-outline)]'
+            : `h-7 rounded-[var(--radius-sm)] hover:bg-[var(--color-surface-hover)] ${open || effortOpen ? 'bg-[var(--color-surface-hover)]' : ''}`
+        } ${isMobileBrowser ? 'min-h-11' : ''} ${fluid ? 'w-full' : ''} ${disabled ? 'opacity-50' : ''}`}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            if (disabled) return
+            if (open) {
+              setOpen(false)
+              return
+            }
+            openSelector()
+          }}
+          disabled={disabled}
+          aria-label={ariaLabel ?? (buttonProviderLabel ? `${buttonModelLabel}, ${buttonProviderLabel}` : buttonModelLabel)}
+          title={buttonProviderLabel ? `${buttonProviderLabel} · ${buttonModelLabel}` : buttonModelLabel}
+          // `focus-visible:rounded-*` restores the other pair of corners while
+          // focused. The ring traces `border-radius`, so on the half-rounded
+          // halves of this segmented control it otherwise drew a box that was
+          // rounded down one side and square down the other.
+          className={`flex min-w-0 items-center gap-1.5 text-xs text-[var(--color-text-secondary)] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed ${
+            appearance === 'field'
+              ? 'h-full w-full rounded-[var(--radius-md)] px-3 text-left'
+              : `rounded-l-[var(--radius-sm)] focus-visible:rounded-[var(--radius-sm)] pl-2 ${fluid ? 'flex-1' : ''} ${compact ? 'max-w-[112px]' : 'max-w-[220px]'} ${showEffortPill ? 'pr-1' : 'rounded-r-[var(--radius-sm)] pr-1.5'}`
+          }`}
+        >
+          <span className={`${appearance === 'field' ? 'text-[13px]' : 'text-xs'} min-w-0 flex-1 truncate text-[var(--color-text-primary)]`}>
+            {buttonModelLabel}
+          </span>
+          {!canEditRuntimeEffort && !compact && buttonProviderLabel && (
+            <span className="max-w-[108px] flex-shrink-0 truncate text-[11px] text-[var(--color-text-tertiary)]">
+              {buttonProviderLabel}
+            </span>
+          )}
+          {needsProviderConfiguration
+            ? <ArrowRight aria-hidden="true" size={appearance === 'field' ? 16 : 12} strokeWidth={2} className="flex-shrink-0 text-[var(--color-text-tertiary)]" />
+            : !showEffortPill && <ChevronDown aria-hidden="true" size={appearance === 'field' ? 16 : 12} strokeWidth={2} className="flex-shrink-0 text-[var(--color-text-tertiary)]" />}
+        </button>
+
+        {showEffortPill && selectedRuntimeEffort && (
+          <button
+            ref={effortButtonRef}
+            type="button"
+            disabled={disabled || lockedProviderId !== undefined}
+            aria-label={`${t('model.effort')}: ${effortLabels[selectedRuntimeEffort]}${showOpenAIFastMode && activeRuntimeSelection?.openAIFastMode ? ` · ${t('model.openAIFastMode')}` : ''}`}
+            aria-expanded={effortOpen}
+            onClick={() => {
+              if (disabled) return
+              setOpen(false)
+              setEffortOpen(!effortOpen)
+            }}
+            // The effort rides on the model name as a small sunken pill; the
+            // chevron moves here so the pair reads "model · effort ⌄".
+            className={`flex shrink-0 items-center gap-1 rounded-r-[var(--radius-sm)] pl-0.5 pr-1.5 text-[var(--color-text-tertiary)] outline-none transition-colors hover:text-[var(--color-text-primary)] focus-visible:rounded-[var(--radius-sm)] focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed`}
+          >
+            <span className="inline-flex h-[18px] items-center rounded-full bg-[var(--color-surface-container)] px-1.5 text-[11px]">
+              {effortLabels[selectedRuntimeEffort]}
+            </span>
+            {showOpenAIFastMode && activeRuntimeSelection?.openAIFastMode && (
+              <span className="text-[11px] text-[var(--color-text-secondary)]">{t('model.openAIFastMode')}</span>
+            )}
+            <ChevronDown aria-hidden="true" size={12} strokeWidth={2} className="flex-shrink-0" />
+          </button>
+        )}
+      </div>
+      {dropdown}
+      {canEditRuntimeEffort && selectedRuntimeEffort && (
+        <ReasoningEffortPopover
+          open={effortOpen}
+          anchorRef={effortButtonRef}
+          options={runtimeEffortOptions.map((option) => option.value)}
+          value={selectedRuntimeEffort}
+          labels={effortLabels}
+          ariaLabel={t('model.effort')}
+          footnote={starEffortFootnote}
+          onChange={handleRuntimeEffortSelect}
+          {...(showOpenAIFastMode ? {
+            fastMode: activeRuntimeSelection?.openAIFastMode === true,
+            onFastModeChange: handleOpenAIFastModeChange,
+          } : {})}
+          onClose={() => setEffortOpen(false)}
+        />
+      )}
+    </div>
+  )
+})

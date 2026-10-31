@@ -1,0 +1,71 @@
+import { render, screen, within } from '@testing-library/react'
+import '@testing-library/jest-dom'
+import { describe, expect, it } from 'vitest'
+import { SessionChatHeader, SessionChatSurface } from './SessionChatSurface'
+
+describe('SessionChatSurface', () => {
+  it.each([
+    { compact: false, mobileLayout: false, gutter: 'px-6' },
+    { compact: true, mobileLayout: false, gutter: 'px-4' },
+    { compact: false, mobileLayout: true, gutter: 'px-3' },
+    { compact: true, mobileLayout: true, gutter: 'px-3' },
+  ])('aligns the header with the composer at $gutter', ({ compact, mobileLayout, gutter }) => {
+    render(<SessionChatHeader title="Conversation" compact={compact} mobileLayout={mobileLayout} />)
+    expect(screen.getByTestId('session-header')).toHaveClass(gutter)
+  })
+
+  it('keeps every conversation on the main session column measure', () => {
+    render(
+      <SessionChatSurface
+        surfaceKind="agent"
+        agentRunKind="subagent"
+        isMobileLayout={false}
+        activityRailOpen
+        activityRail={<aside>Activity</aside>}
+      >
+        <SessionChatHeader
+          title="Child run"
+          metadata={[
+            { key: 'status', content: <span>Running</span> },
+            { key: 'messages', content: <span>3 messages</span> },
+          ]}
+        />
+        <main>Transcript</main>
+      </SessionChatSurface>,
+    )
+
+    const surface = screen.getByTestId('session-chat-surface')
+    expect(surface).toHaveAttribute('data-session-chat-kind', 'agent')
+    expect(surface).toHaveAttribute('data-agent-run-kind', 'subagent')
+    expect(screen.getByTestId('session-chat-column')).toHaveClass('min-w-[360px]', 'pr-[352px]')
+    expect(screen.getByText('Activity')).toBeInTheDocument()
+
+    const header = screen.getByTestId('session-header')
+    expect(header.firstElementChild).toHaveClass('max-w-[var(--chat-content-max-width)]')
+    expect(within(header).getByRole('heading', { name: 'Child run' })).toHaveClass('truncate', 'text-[15px]', 'font-semibold')
+    const separators = header.querySelectorAll('[aria-hidden="true"]')
+    expect(separators).toHaveLength(1)
+    // A 3px dot, not a typed "·" glyph whose size and baseline follow the font.
+    expect(separators[0]!.textContent).toBe('')
+    expect(separators[0]).toHaveClass('rounded-full')
+  })
+
+  it('uses the same compact chat column contract when a side panel is present', () => {
+    render(
+      <SessionChatSurface
+        surfaceKind="main"
+        isMobileLayout={false}
+        compact
+        sidePanel={<aside>Workbench</aside>}
+      >
+        <div>Conversation</div>
+      </SessionChatSurface>,
+    )
+
+    expect(screen.getByTestId('session-chat-column')).toHaveClass(
+      'min-w-[400px]',
+      'bg-[var(--color-surface)]',
+    )
+    expect(screen.getByText('Workbench')).toBeInTheDocument()
+  })
+})

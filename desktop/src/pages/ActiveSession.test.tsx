@@ -1,0 +1,3307 @@
+import { openSideChat } from '@/lib/workspace/openSideChat'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import '@testing-library/jest-dom'
+import { act } from 'react'
+import type { TeamWorkbenchSessionTimeline, TeamWorkbenchSnapshot } from '../types/team'
+
+vi.mock('../components/agentTeams/AgentTeamsPlanCard', () => ({
+  AgentTeamsPlanCard: ({ sessionId }: { sessionId: string }) => <div data-testid="durable-team-plan" data-session-id={sessionId} />,
+}))
+
+vi.mock('@/lib/workspace/openSideChat', () => ({ openSideChat: vi.fn(async () => 'tab-side') }))
+
+const viewportMocks = vi.hoisted(() => ({
+  isMobile: false,
+}))
+const sessionApiMocks = vi.hoisted(() => ({
+  getGitInfo: vi.fn(),
+}))
+const teamApiMocks = vi.hoisted(() => ({
+  getMemberTranscript: vi.fn(() => Promise.resolve({ messages: [] })),
+  getTeam: vi.fn(),
+  listTeams: vi.fn(),
+  getWorkbenchForSession: vi.fn(
+    (): Promise<TeamWorkbenchSessionTimeline> => Promise.reject(new Error('not a team session')),
+  ),
+  getWorkbench: vi.fn(),
+  sendMemberMessage: vi.fn(),
+}))
+
+const browserHostMocks = vi.hoisted(() => ({
+  available: false,
+  create: vi.fn(async () => ({ ok: true as const })),
+  setVisible: vi.fn(async () => ({ ok: true as const })),
+  message: vi.fn(async () => ({ ok: true as const })),
+}))
+
+vi.mock('../lib/workspace/browserHost', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/workspace/browserHost')>()
+  return {
+    ...actual,
+    isWorkspaceBrowserAvailable: () => browserHostMocks.available,
+    workspaceBrowserHost: {
+      ...actual.workspaceBrowserHost,
+      create: browserHostMocks.create,
+      setVisible: browserHostMocks.setVisible,
+      message: browserHostMocks.message,
+    },
+  }
+})
+
+vi.mock('../api/sessions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/sessions')>()
+  return {
+    ...actual,
+    sessionsApi: {
+      ...actual.sessionsApi,
+      getGitInfo: sessionApiMocks.getGitInfo,
+    },
+  }
+})
+
+vi.mock('../hooks/useMobileViewport', () => ({
+  useMobileViewport: () => viewportMocks.isMobile,
+}))
+
+vi.mock('../components/chat/MessageList', () => ({
+  MessageList: ({ compact, sessionId }: { compact?: boolean; sessionId?: string }) => (
+    <div data-testid="message-list" data-compact={compact ? 'true' : 'false'} data-session-id={sessionId} />
+  ),
+}))
+
+vi.mock('../components/trajectory/TrajectoryView', () => ({
+  default: ({ sessionId, visible, running }: { sessionId: string; visible: boolean; running: boolean }) => (
+    <div data-testid="trajectory-view" data-session-id={sessionId} data-visible={visible ? 'true' : 'false'} data-running={running ? 'true' : 'false'} />
+  ),
+}))
+
+vi.mock('../components/chat/ChatInput', () => ({
+  ChatInput: ({ compact, variant, sessionId, visible }: { compact?: boolean; variant?: string; sessionId?: string; visible?: boolean }) => (
+    <div data-testid="chat-input" data-compact={compact ? 'true' : 'false'} data-variant={variant} data-session-id={sessionId} data-visible={visible ? 'true' : 'false'} />
+  ),
+}))
+
+vi.mock('../api/teams', () => ({
+  teamsApi: {
+    getMemberTranscript: teamApiMocks.getMemberTranscript,
+    get: teamApiMocks.getTeam,
+    list: teamApiMocks.listTeams,
+    getWorkbenchForSession: teamApiMocks.getWorkbenchForSession,
+    getWorkbench: teamApiMocks.getWorkbench,
+    sendMemberMessage: teamApiMocks.sendMemberMessage,
+  },
+}))
+
+vi.mock('./TerminalSettings', () => ({
+  TerminalSettings: ({
+    active,
+    cwd,
+    onOpenInTab,
+    onClose,
+    runtimeId,
+    preserveOnUnmount,
+    testId,
+  }: {
+    active?: boolean
+    cwd?: string
+    onOpenInTab?: () => void
+    onClose?: () => void
+    runtimeId?: string
+    preserveOnUnmount?: boolean
+    testId: string
+  }) => (
+    <div
+      data-testid={testId}
+      data-active={active ? 'true' : 'false'}
+      data-cwd={cwd ?? ''}
+      data-preserve-on-unmount={preserveOnUnmount ? 'true' : 'false'}
+      data-runtime-id={runtimeId ?? ''}
+    >
+      <button type="button" onClick={onOpenInTab}>Open in Tab</button>
+      <button type="button" onClick={onClose}>Close terminal panel</button>
+    </div>
+  ),
+}))
+
+import { ActiveSession } from './ActiveSession'
+import { installFakeBrowserGuests, isBrowserPageShown } from '../test/fakeBrowserGuests'
+import { createDefaultSessionState, useChatStore } from '../stores/chatStore'
+import { useCLITaskStore } from '../stores/cliTaskStore'
+import { useSessionStore } from '../stores/sessionStore'
+import { useSettingsStore } from '../stores/settingsStore'
+import { useStarStore } from '../stores/starStore'
+import { useTabStore } from '../stores/tabStore'
+import { useTeamStore } from '../stores/teamStore'
+import { useTeamPlanStore } from '../stores/teamPlanStore'
+import type { TeamPlanRecord } from '../../../src/shared/teamPlan'
+import { useActivityPanelStore } from '../stores/activityPanelStore'
+import { useSessionDelegationStore } from '../stores/sessionDelegationStore'
+import { sessionCollaborationApi, type SessionDelegationSnapshot } from '../api/sessionCollaboration'
+import { useTrajectoryViewStore } from '../stores/trajectoryViewStore'
+import {
+  WORKSPACE_BOTTOM_DEFAULT_HEIGHT,
+  WORKSPACE_BOTTOM_MAX_HEIGHT,
+  WORKSPACE_BOTTOM_MIN_HEIGHT,
+  WORKSPACE_SIDE_DEFAULT_WIDTH,
+  useWorkspaceStore,
+} from '../stores/workspaceStore'
+
+beforeEach(() => {
+  vi.mocked(openSideChat).mockClear()
+  sessionApiMocks.getGitInfo.mockReset()
+  sessionApiMocks.getGitInfo.mockResolvedValue({
+    branch: 'main',
+    repoName: 'project',
+    workDir: '/workspace/project',
+    changedFiles: 0,
+    worktree: null,
+  })
+  teamApiMocks.getMemberTranscript.mockReset()
+  teamApiMocks.getMemberTranscript.mockResolvedValue({ messages: [] })
+  teamApiMocks.getTeam.mockReset()
+  teamApiMocks.listTeams.mockReset()
+  teamApiMocks.getWorkbenchForSession.mockReset()
+  teamApiMocks.getWorkbenchForSession.mockRejectedValue(new Error('not a team session'))
+  teamApiMocks.getWorkbench.mockReset()
+  teamApiMocks.sendMemberMessage.mockReset()
+})
+
+let disposeGuests: (() => void) | null = null
+
+afterEach(() => {
+  cleanup()
+  disposeGuests?.()
+  disposeGuests = null
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+  browserHostMocks.available = false
+  for (const mock of [browserHostMocks.create, browserHostMocks.setVisible, browserHostMocks.message]) {
+    mock.mockClear()
+  }
+  viewportMocks.isMobile = false
+  useTabStore.setState({ tabs: [], activeTabId: null })
+  useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
+  useChatStore.setState({ sessions: {} })
+  useSettingsStore.setState({ locale: 'en' })
+  useTeamStore.getState().stopMemberPolling()
+  useTeamStore.setState(useTeamStore.getInitialState(), true)
+  useWorkspaceStore.setState(useWorkspaceStore.getInitialState(), true)
+  useActivityPanelStore.setState(useActivityPanelStore.getInitialState(), true)
+  useCLITaskStore.setState(useCLITaskStore.getInitialState(), true)
+  useTrajectoryViewStore.setState({ modes: {}, opened: {}, nav: null })
+})
+
+describe('ActiveSession trajectory view', () => {
+  function seedSession(id: string) {
+    useSettingsStore.setState({ locale: 'en' })
+    useTabStore.setState({ activeTabId: id, tabs: [{ sessionId: id, title: 'Main', type: 'session', status: 'idle' }] })
+    useSessionStore.setState({ sessions: [{ id, title: 'Main', messageCount: 1, createdAt: '', modifiedAt: '', projectPath: '/repo', workDir: '/repo', workDirExists: true }] })
+    useChatStore.setState({ sessions: { [id]: { ...createDefaultSessionState(), connectionState: 'connected', historyStatus: 'ready', historyHydrated: true, messages: [{ id: 'm', type: 'assistant_text', content: 'main', timestamp: 1 }] } } })
+  }
+
+  it('retains the known tab title when summary metadata is unavailable', async () => {
+    const id = 'history-with-unavailable-summary'
+    seedSession(id)
+    useTabStore.setState({ tabs: [{ sessionId: id, title: 'Known search result title', type: 'session', status: 'idle' }] })
+    useSessionStore.setState({ sessions: [] })
+    await act(async () => { render(<ActiveSession sessionId={id} />) })
+    expect(screen.getByRole('heading', { name: 'Known search result title' })).toBeInTheDocument()
+    act(() => useSessionStore.setState({ sessions: [{
+      id, title: 'Authoritative loaded title', messageCount: 1, createdAt: '', modifiedAt: '',
+      projectPath: '/repo', workDir: '/repo', workDirExists: true,
+    }] }))
+    expect(screen.getByRole('heading', { name: 'Authoritative loaded title' })).toBeInTheDocument()
+  })
+
+  it('swaps the chat body for the trajectory while keeping the chat and composer mounted', async () => {
+    const id = 'trajectory-session'
+    seedSession(id)
+    render(<ActiveSession sessionId={id} />)
+    const list = screen.getByTestId('message-list')
+    const input = screen.getByTestId('chat-input')
+    const decisions = screen.getByTestId('session-decision-dock')
+    expect(decisions).toHaveClass('px-6')
+    expect(decisions.firstElementChild).toHaveClass('max-w-[var(--chat-content-max-width)]')
+    // Never mounted (so never fetched) until the user opens it.
+    expect(screen.queryByTestId('trajectory-view')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Trajectory' }))
+    const trajectory = await screen.findByTestId('trajectory-view')
+    expect(trajectory).toHaveAttribute('data-visible', 'true')
+    expect(trajectory).toHaveAttribute('data-session-id', id)
+    expect(screen.getByTestId('message-list')).toBe(list)
+    expect(list.parentElement).toHaveClass('hidden')
+    // The composer leaves the ledger the full height but stays mounted, so its
+    // draft is still there on the way back.
+    expect(screen.getByTestId('chat-input')).toBe(input)
+    expect(input).toHaveAttribute('data-visible', 'false')
+    expect(screen.getByTestId('session-composer-slot')).toHaveClass('hidden')
+    expect(screen.getByTestId('session-decision-dock')).toBe(decisions)
+    expect(decisions).toHaveClass('hidden')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
+    expect(screen.getByTestId('trajectory-view')).toBe(trajectory)
+    expect(trajectory).toHaveAttribute('data-visible', 'false')
+    expect(screen.getByTestId('session-trajectory-panel')).toHaveClass('hidden')
+    expect(list.parentElement).not.toHaveClass('hidden')
+    expect(screen.getByTestId('chat-input')).toBe(input)
+    expect(input).toHaveAttribute('data-visible', 'true')
+    expect(screen.getByTestId('session-composer-slot')).not.toHaveClass('hidden')
+    expect(decisions).not.toHaveClass('hidden')
+  })
+
+  it('marks 对话 while a card waits there and the trajectory hides it', async () => {
+    const id = 'attention-session'
+    seedSession(id)
+    render(<ActiveSession sessionId={id} />)
+    const chatTab = () => screen.getByRole('tab', { name: /^Chat/ })
+    const mark = () => within(chatTab()).queryByRole('img', { name: 'Waiting for your approval' })
+    const setPending = (pending: boolean) => act(() => {
+      const session = useChatStore.getState().sessions[id]!
+      const permission = { requestId: 'req-1', toolName: 'Bash', input: { command: 'ls' } }
+      useChatStore.setState({
+        sessions: {
+          [id]: {
+            ...session,
+            pendingPermission: pending ? permission : null,
+            pendingPermissions: pending ? { 'req-1': permission } : {},
+          },
+        },
+      })
+    })
+
+    // In 对话 the card itself is on screen; the mark would only repeat it.
+    setPending(true)
+    expect(mark()).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Trajectory' }))
+    await screen.findByTestId('trajectory-view')
+    expect(mark()).toBeInTheDocument()
+    expect(chatTab()).toHaveAccessibleName('Chat Waiting for your approval')
+
+    setPending(false)
+    expect(mark()).toBeNull()
+    setPending(true)
+    expect(mark()).toBeInTheDocument()
+
+    fireEvent.click(chatTab())
+    expect(chatTab()).toHaveAttribute('aria-selected', 'true')
+    expect(mark()).toBeNull()
+  })
+
+  it('opens the trajectory when a chat tool card asks to reveal a row there', async () => {
+    const id = 'reveal-session'
+    seedSession(id)
+    render(<ActiveSession sessionId={id} />)
+    act(() => useTrajectoryViewStore.getState().revealInTrajectory(id, 't:toolu_1'))
+    expect(await screen.findByTestId('trajectory-view')).toHaveAttribute('data-visible', 'true')
+    expect(screen.getByRole('tab', { name: 'Trajectory' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('offers no trajectory switch on mobile', () => {
+    viewportMocks.isMobile = true
+    const id = 'mobile-trajectory'
+    seedSession(id)
+    useTrajectoryViewStore.setState({ modes: { [id]: 'trajectory' }, opened: { [id]: true }, nav: null })
+    render(<ActiveSession sessionId={id} />)
+    expect(screen.queryByRole('tab', { name: 'Trajectory' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('trajectory-view')).not.toBeInTheDocument()
+    expect(screen.getByTestId('message-list').parentElement).not.toHaveClass('hidden')
+  })
+})
+
+describe('ActiveSession task polling', () => {
+  it('opens side chat through the workspace without replacing the main surface', () => {
+    const id = 'side-question-session'
+    useSettingsStore.setState({ locale: 'en' })
+    useTabStore.setState({ activeTabId: id, tabs: [{ sessionId: id, title: 'Main', type: 'session', status: 'idle' }] })
+    useSessionStore.setState({ sessions: [{ id, title: 'Main', messageCount: 1, createdAt: '', modifiedAt: '', projectPath: '/repo', workDir: '/repo', workDirExists: true }] })
+    useChatStore.setState({ sessions: { [id]: { ...createDefaultSessionState(), connectionState: 'connected', historyStatus: 'ready', historyHydrated: true, messages: [{ id: 'm', type: 'assistant_text', content: 'main', timestamp: 1 }] } } })
+    useWorkspaceStore.getState().setLayout(id, 'split')
+    render(<ActiveSession sessionId={id} />)
+    const workbench = screen.getByTestId('workbench-panel')
+    const main = screen.getByTestId('message-list')
+    fireEvent.click(screen.getAllByRole('button', { name: 'Side chat' })[0]!)
+    expect(openSideChat).toHaveBeenCalledWith(id)
+    expect(screen.getByTestId('workbench-panel')).toBe(workbench)
+    expect(workbench).not.toHaveClass('hidden')
+    expect(screen.getByTestId('message-list')).toBe(main)
+  })
+
+  it.each([false, true])('offers no side chat in a blank session until it has a conversation (mobile: %s)', (isMobile) => {
+    viewportMocks.isMobile = isMobile
+    const id = `blank-side-parent-${isMobile ? 'mobile' : 'desktop'}`
+    useSettingsStore.setState({ locale: 'en' })
+    useTabStore.setState({ activeTabId: id, tabs: [{ sessionId: id, title: 'Untitled Session', type: 'session', status: 'idle' }] })
+    useSessionStore.setState({ sessions: [{ id, title: 'Untitled Session', messageCount: 0, createdAt: '', modifiedAt: '', projectPath: '/repo', workDir: '/repo', workDirExists: true }] })
+    useChatStore.setState({ sessions: { [id]: { ...createDefaultSessionState(), connectionState: 'connected', historyStatus: 'ready', historyHydrated: true } } })
+    if (!isMobile) useWorkspaceStore.getState().setLayout(id, 'split')
+    render(<ActiveSession sessionId={id} />)
+
+    expect(screen.getByTestId('empty-session-hero')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Side chat' })).not.toBeInTheDocument()
+    if (!isMobile) {
+      expect(screen.getByTestId('workspace-launcher-review')).toBeInTheDocument()
+      expect(screen.queryByTestId('workspace-launcher-side-chat')).not.toBeInTheDocument()
+    }
+
+    act(() => useChatStore.setState(state => ({ sessions: { ...state.sessions, [id]: { ...state.sessions[id]!, messages: [{ id: 'u', type: 'user_text', content: 'hi', timestamp: 1 }] } } })))
+
+    expect(screen.queryByTestId('empty-session-hero')).not.toBeInTheDocument()
+    const launcherEntry = screen.queryByTestId('workspace-launcher-side-chat')
+    expect(Boolean(launcherEntry)).toBe(!isMobile)
+    const headerEntry = screen.getAllByRole('button', { name: 'Side chat' }).filter(button => button !== launcherEntry)
+    expect(headerEntry).toHaveLength(1)
+    fireEvent.click(headerEntry[0]!)
+    expect(openSideChat).toHaveBeenCalledWith(id)
+  })
+
+  it('does not offer side chats for restored lean sessions', () => {
+    const id = 'lean-parent'
+    useTabStore.setState({ activeTabId: id, tabs: [{ sessionId: id, title: 'Main', type: 'session', status: 'idle' }] })
+    useSessionStore.setState({ sessions: [{ id, agentProfile: 'lean', title: 'Main', messageCount: 1, createdAt: '', modifiedAt: '', projectPath: '/repo', workDir: '/repo', workDirExists: true }] })
+    useChatStore.setState({ sessions: { [id]: { ...createDefaultSessionState(), connectionState: 'connected', historyStatus: 'ready', historyHydrated: true } } })
+    render(<ActiveSession sessionId={id} />)
+    expect(screen.queryByRole('button', { name: 'Side chat' })).not.toBeInTheDocument()
+  })
+
+  it('can hide a mobile side chat without destroying its temporary tab', () => {
+    viewportMocks.isMobile = true
+    const id = 'mobile-side-parent'
+    useTabStore.setState({ activeTabId: id, tabs: [{ sessionId: id, title: 'Main', type: 'session', status: 'idle' }] })
+    useSessionStore.setState({ sessions: [{ id, title: 'Main', messageCount: 1, createdAt: '', modifiedAt: '', projectPath: '/repo', workDir: '/repo', workDirExists: true }] })
+    useChatStore.setState({ sessions: { [id]: { ...createDefaultSessionState(), connectionState: 'connected', historyStatus: 'ready', historyHydrated: true } } })
+    const tabId = useWorkspaceStore.getState().openTarget(id, { kind: 'side-chat', sideChatId: 'side-mobile' })!
+    render(<ActiveSession sessionId={id} />)
+    expect(screen.getByTestId('workbench-panel')).toHaveAttribute('data-workspace-layout', 'full')
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Workspace' }))
+    expect(screen.queryByTestId('workbench-panel')).not.toBeInTheDocument()
+    expect(useWorkspaceStore.getState().getTab(id, tabId)).not.toBeNull()
+    expect(screen.getByTestId('active-session-chat-column')).not.toHaveClass('hidden')
+  })
+
+  it('keeps the same message list bound to its session while settings is selected', () => {
+    const sessionId = 'retained-session'
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Retained Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+    })
+    useTabStore.setState({
+      tabs: [
+        { sessionId, title: 'Retained Session', type: 'session', status: 'idle' },
+        { sessionId: '__settings__', title: 'Settings', type: 'settings', status: 'idle' },
+      ],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          ...createDefaultSessionState(),
+          connectionState: 'connected',
+          messages: [{ id: 'existing', type: 'assistant_text', content: 'ready', timestamp: 1 }],
+          historyStatus: 'ready',
+          historyHydrated: true,
+        },
+      },
+    })
+
+    const { rerender } = render(<ActiveSession sessionId={sessionId} active />)
+    const messageList = screen.getByTestId('message-list')
+    const chatInput = screen.getByTestId('chat-input')
+
+    act(() => useTabStore.getState().setActiveTab('__settings__'))
+    rerender(<ActiveSession sessionId={sessionId} active={false} />)
+
+    expect(screen.getByTestId('message-list')).toBe(messageList)
+    expect(screen.getByTestId('chat-input')).toBe(chatInput)
+    expect(messageList).toHaveAttribute('data-session-id', sessionId)
+    expect(chatInput).toHaveAttribute('data-session-id', sessionId)
+    expect(chatInput).toHaveAttribute('data-visible', 'false')
+    expect(useChatStore.getState().sessions['__settings__']).toBeUndefined()
+  })
+
+  it('parks the workspace browser page while another page covers the retained session', async () => {
+    // ContentRouter hides a retained session with opacity only. The old native
+    // page ignored CSS and kept painting over the market page; the page must
+    // also stop acting as browser chrome (shortcuts) while it is off screen.
+    disposeGuests = installFakeBrowserGuests()
+    browserHostMocks.available = true
+    const sessionId = 'browser-retained-session'
+    useSessionStore.setState({
+      sessions: [{ id: sessionId, title: 'Browser', createdAt: '', modifiedAt: '', messageCount: 1, projectPath: '/repo', workDir: '/repo', workDirExists: true }],
+      activeSessionId: sessionId,
+    })
+    useTabStore.setState({
+      tabs: [
+        { sessionId, title: 'Browser', type: 'session', status: 'idle' },
+        { sessionId: '__market__', title: 'Market', type: 'market', status: 'idle' },
+      ],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({ sessions: { [sessionId]: { ...createDefaultSessionState(), connectionState: 'connected', historyStatus: 'ready', historyHydrated: true } } })
+    const tabId = useWorkspaceStore.getState().openTarget(sessionId, { kind: 'browser', url: 'https://example.test/' })!
+    const tab = useWorkspaceStore.getState().getTab(sessionId, tabId)
+    if (tab?.kind !== 'browser') throw new Error('expected a browser tab')
+    useWorkspaceStore.getState().setLayout(sessionId, 'split')
+
+    const { rerender } = render(<ActiveSession sessionId={sessionId} active />)
+    await waitFor(() => expect(browserHostMocks.setVisible).toHaveBeenLastCalledWith(tab.browserTabId, true))
+    expect(isBrowserPageShown(tab.browserTabId)).toBe(true)
+
+    act(() => useTabStore.getState().setActiveTab('__market__'))
+    rerender(<ActiveSession sessionId={sessionId} active={false} />)
+    expect(browserHostMocks.setVisible).toHaveBeenLastCalledWith(tab.browserTabId, false)
+    expect(isBrowserPageShown(tab.browserTabId)).toBe(false)
+
+    act(() => useTabStore.getState().setActiveTab(sessionId))
+    rerender(<ActiveSession sessionId={sessionId} active />)
+    expect(browserHostMocks.setVisible).toHaveBeenLastCalledWith(tab.browserTabId, true)
+    expect(isBrowserPageShown(tab.browserTabId)).toBe(true)
+    // Hiding is presentation only; the page itself must survive the round trip.
+    expect(browserHostMocks.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows cleaned worktrees as retained history and uses the source project for tools', () => {
+    const sessionId = 'cleaned-worktree-session'
+    useSettingsStore.setState({ locale: 'en' })
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Cleaned Worktree Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/repo-worktree',
+        projectRoot: '/repo',
+        workDir: '/repo/.claude/worktrees/desktop-main-12345678',
+        workDirExists: false,
+        workspaceState: 'worktree_removed',
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Cleaned Worktree Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'existing', type: 'assistant_text', content: 'ready', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+    render(<ActiveSession />)
+
+    expect(screen.getByText(
+      'The temporary workspace was cleaned up. History is still available; start a new session in /repo to continue.',
+    )).toBeInTheDocument()
+
+    // Open the terminal the way a user does, through the workspace launcher,
+    // so the cwd under test is the one ActiveSession actually hands down: the
+    // source project, not the worktree path that no longer exists.
+    act(() => {
+      useWorkspaceStore.getState().toggleWorkspace(sessionId)
+    })
+    act(() => {
+      fireEvent.click(screen.getByTestId('workspace-launcher-terminal'))
+    })
+
+    expect(screen.getByTestId('workspace-terminal-host-1')).toHaveAttribute('data-cwd', '/repo')
+  })
+
+  it('treats a persisted historical session as non-empty before messages finish loading', () => {
+    const sessionId = 'history-loading-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'History Loading Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 2,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'History Loading Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.getByTestId('message-list')).toBeInTheDocument()
+    expect(screen.getByTestId('chat-input')).toHaveAttribute('data-variant', 'default')
+  })
+
+  it('replaces the empty hero with the transcript as soon as first-turn preparation begins', () => {
+    const sessionId = 'preparing-first-turn-session'
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'New Session',
+        createdAt: '2026-08-07T00:00:00.000Z',
+        modifiedAt: '2026-08-07T00:00:00.000Z',
+        messageCount: 0,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'New Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          ...useChatStore.getState().getSession(sessionId),
+          connectionState: 'connected',
+          historyStatus: 'ready',
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+    expect(screen.getByTestId('empty-session-hero')).toBeInTheDocument()
+    expect(screen.getByTestId('durable-team-plan')).toBeInTheDocument()
+
+    act(() => {
+      useChatStore.getState().setPreparingTurn(sessionId, true)
+    })
+
+    expect(screen.queryByTestId('empty-session-hero')).not.toBeInTheDocument()
+    expect(screen.getByTestId('message-list')).toBeInTheDocument()
+    expect(screen.getByTestId('chat-input')).toHaveAttribute('data-variant', 'default')
+  })
+
+  it('turns a blank session into the new-session page: project question and starters, no recent threads', () => {
+    // The project question and the generic starters are Code mode's; the
+    // other STAR modes open on their own hero and task templates.
+    useStarStore.setState({ mode: 'code' })
+    onTestFinished(() => useStarStore.setState({ mode: 'work' }))
+    const sessionId = 'blank-new-session'
+    const base = Date.now()
+    const listItem = (id: string, title: string, messageCount: number, minutesAgo: number, workDir = '/workspace/project') => ({
+      id,
+      title,
+      createdAt: new Date(base - minutesAgo * 60_000).toISOString(),
+      modifiedAt: new Date(base - minutesAgo * 60_000).toISOString(),
+      messageCount,
+      projectPath: workDir,
+      workDir,
+      workDirExists: true,
+    })
+    useSessionStore.setState({
+      sessions: [
+        listItem(sessionId, 'New Session', 0, 0),
+        listItem('older', 'Older thread', 4, 120),
+        listItem('newer', 'Newer thread', 2, 5),
+        listItem('elsewhere', 'Other project thread', 3, 1, '/workspace/other'),
+      ],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'New Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          ...useChatStore.getState().getSession(sessionId),
+          connectionState: 'connected',
+          historyStatus: 'ready',
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    const hero = screen.getByTestId('empty-session-hero')
+    expect(within(hero).getByRole('heading', { level: 1 })).toHaveTextContent('project')
+    // The home page lists no earlier threads (they stay in the sidebar), even
+    // though this project has some with content.
+    const starter = screen.getByTestId('new-session-starter')
+    expect(within(starter).queryByRole('listitem')).not.toBeInTheDocument()
+    expect(starter).not.toHaveTextContent('Newer thread')
+    expect(starter).not.toHaveTextContent('Older thread')
+
+    // A starter chip goes through the composer's insertion queue, so it lands
+    // at the cursor without wiping attachments a replace would clear.
+    const chips = within(within(starter).getByRole('group')).getAllByRole('button')
+    expect(chips).toHaveLength(4)
+    fireEvent.click(chips[1]!)
+    expect(useChatStore.getState().sessions[sessionId]?.composerInsertion?.text).toBe(chips[1]!.textContent)
+  })
+
+  // The header used to show "5.1M tokens incl. cache" here; it no longer counts
+  // tokens at all (usage lives in Settings → Token usage).
+  it('keeps token usage out of the header, cache tokens included', async () => {
+    const sessionId = 'deepseek-cache-token-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'DeepSeek Cache Token Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'DeepSeek Cache Token Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          ...createDefaultSessionState(),
+          connectionState: 'connected',
+        },
+      },
+    })
+    render(<ActiveSession />)
+
+    await act(async () => {
+      useChatStore.getState().handleServerMessage(sessionId, {
+        type: 'message_complete',
+        usage: {
+          input_tokens: 107_600,
+          output_tokens: 11_400,
+          cache_read_tokens: 4_971_000,
+          cache_creation_tokens: 10_000,
+        },
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const header = screen.getByTestId('session-header')
+    expect(within(header).queryByTitle(/cache read/i)).toBeNull()
+    expect(header).not.toHaveTextContent(/tokens/i)
+  })
+
+  it('shows the worktree name in the header and reveals its directory on focus', async () => {
+    const worktreeSessionId = 'worktree-header-session'
+    const regularSessionId = 'regular-header-session'
+    const worktreeName = 'desktop-feature-worktree-header'
+    const plannedPath = `/workspace/project/.claude/worktrees/${worktreeName}`
+
+    sessionApiMocks.getGitInfo.mockImplementation(async (sessionId: string) => ({
+      branch: 'feature/worktree-header',
+      repoName: 'project',
+      workDir: sessionId === worktreeSessionId ? plannedPath : '/workspace/project',
+      changedFiles: 0,
+      worktree: sessionId === worktreeSessionId ? {
+        enabled: true,
+        path: null,
+        plannedPath,
+        sourceWorkDir: '/workspace/project',
+        slug: worktreeName,
+        branch: 'worktree/feature-worktree-header',
+      } : null,
+    }))
+
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: worktreeSessionId,
+          title: 'Worktree Header Session',
+          createdAt: '2026-08-07T00:00:00.000Z',
+          modifiedAt: '2026-08-07T00:00:00.000Z',
+          messageCount: 1,
+          projectPath: '/workspace/project',
+          workDir: plannedPath,
+          workDirExists: true,
+        },
+        {
+          id: regularSessionId,
+          title: 'Regular Header Session',
+          createdAt: '2026-08-07T00:00:00.000Z',
+          modifiedAt: '2026-08-07T00:00:00.000Z',
+          messageCount: 1,
+          projectPath: '/workspace/project',
+          workDir: '/workspace/project',
+          workDirExists: true,
+        },
+      ],
+      activeSessionId: worktreeSessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [
+        { sessionId: worktreeSessionId, title: 'Worktree Header Session', type: 'session', status: 'idle' },
+        { sessionId: regularSessionId, title: 'Regular Header Session', type: 'session', status: 'idle' },
+      ],
+      activeTabId: worktreeSessionId,
+    })
+    const idleSessionState = {
+      chatState: 'idle' as const,
+      connectionState: 'connected' as const,
+      streamingText: '',
+      streamingToolInput: '',
+      activeToolUseId: null,
+      activeToolName: null,
+      activeThinkingId: null,
+      pendingPermission: null,
+      pendingComputerUsePermission: null,
+      tokenUsage: { input_tokens: 0, output_tokens: 0 },
+      streamingResponseChars: 0,
+      elapsedSeconds: 0,
+      statusVerb: '',
+      slashCommands: [],
+      agentTaskNotifications: {},
+      elapsedTimer: null,
+    }
+    useChatStore.setState({
+      sessions: {
+        [worktreeSessionId]: {
+          ...idleSessionState,
+          messages: [{ id: 'worktree-message', type: 'assistant_text', content: 'ready', timestamp: 1 }],
+        },
+        [regularSessionId]: {
+          ...idleSessionState,
+          messages: [{ id: 'regular-message', type: 'assistant_text', content: 'ready', timestamp: 1 }],
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    const indicator = await screen.findByTestId('session-worktree-indicator')
+    expect(indicator).toHaveTextContent(worktreeName)
+    expect(screen.getByRole('heading', { name: 'Worktree Header Session' })).toBeInTheDocument()
+    expect(within(screen.getByTestId('session-header')).queryByText(plannedPath)).not.toBeInTheDocument()
+
+    fireEvent.focus(indicator)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(plannedPath)
+
+    act(() => {
+      useTabStore.getState().setActiveTab(regularSessionId)
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('session-worktree-indicator')).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole('heading', { name: 'Regular Header Session' })).toBeInTheDocument()
+  })
+
+  it('shows a loading state for historical sessions while messages are loading', () => {
+    const sessionId = 'history-visible-loading-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'History Loading Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 2,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'History Loading Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          ...useChatStore.getState().getSession(sessionId),
+          connectionState: 'connected',
+          historyStatus: 'loading',
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.getByRole('status')).toHaveTextContent(/Loading|加载中/)
+    expect(screen.queryByTestId('message-list')).not.toBeInTheDocument()
+    expect(screen.getByTestId('chat-input')).toHaveAttribute('data-variant', 'default')
+  })
+
+  it('renders the current goal as a lightweight header strip without a page-level panel', () => {
+    const sessionId = 'goal-visible-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Goal Visible Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Goal Visible Session', type: 'session', status: 'running' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{
+            id: 'goal-event',
+            type: 'goal_event',
+            action: 'created',
+            status: 'active',
+            objective: 'ship the smoke test',
+            budget: '0 / 2,000 tokens',
+            continuations: '0',
+            timestamp: 1,
+          }],
+          activeGoal: {
+            action: 'created',
+            status: 'active',
+            objective: 'ship the smoke test',
+            budget: '0 / 2,000 tokens',
+            continuations: '0',
+            updatedAt: 1,
+          },
+          chatState: 'thinking',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.queryByTestId('active-goal-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('active-goal-strip')).toBeInTheDocument()
+    expect(screen.getByTestId('active-goal-strip')).toHaveTextContent('ship the smoke test')
+    expect(screen.getByTestId('message-list')).toBeInTheDocument()
+  })
+
+  it('does not keep a completed goal pinned in the header', () => {
+    const sessionId = 'goal-completed-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Goal Completed Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 3,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Goal Completed Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{
+            id: 'goal-completed-event',
+            type: 'goal_event',
+            action: 'completed',
+            status: 'complete',
+            message: 'Goal marked complete.',
+            timestamp: 3,
+          }],
+          activeGoal: {
+            action: 'completed',
+            status: 'complete',
+            message: 'Goal marked complete.',
+            updatedAt: 3,
+          },
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.queryByTestId('active-goal-strip')).not.toBeInTheDocument()
+    expect(screen.getByTestId('message-list')).toBeInTheDocument()
+  })
+
+  it('keeps persistent activity surfaces out of the composer area', () => {
+    const sessionId = 'activity-clean-composer-session'
+
+    useCLITaskStore.setState({
+      sessionId,
+      tasks: [{
+        id: 'task-1',
+        subject: 'Write tests',
+        description: '',
+        status: 'in_progress',
+        blocks: [],
+        blockedBy: [],
+        taskListId: sessionId,
+      }],
+      completedAndDismissed: false,
+    })
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Activity Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Activity Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [],
+          backgroundAgentTasks: {
+            'agent-task-1': {
+              taskId: 'agent-task-1',
+              toolUseId: 'agent-tool-1',
+              status: 'running',
+              taskType: 'local_agent',
+              description: 'Explore code',
+              startedAt: 1,
+              updatedAt: 2,
+            },
+          },
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    const chatColumn = screen.getByTestId('active-session-chat-column')
+    expect(chatColumn).toContainElement(screen.getByTestId('chat-input'))
+    expect(chatColumn).toHaveClass('relative')
+    expect(screen.queryByTestId('session-task-bar')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('team-status-bar')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('background-tasks-bar')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('background-tasks-button')).not.toBeInTheDocument()
+  })
+
+  it('renders the activity panel as a rail and hides it when the workspace opens', async () => {
+    const sessionId = 'activity-panel-open-session'
+
+    useCLITaskStore.setState({
+      sessionId,
+      tasks: [{
+        id: 'task-1',
+        subject: 'Implement panel',
+        description: 'Move persistent rows',
+        status: 'in_progress',
+        blocks: [],
+        blockedBy: [],
+        taskListId: sessionId,
+      }],
+      completedAndDismissed: false,
+    })
+    useActivityPanelStore.getState().open(sessionId)
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Activity Panel Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Activity Panel Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [
+            {
+              id: 'agent-tool-1',
+              type: 'tool_use',
+              toolName: 'Agent',
+              toolUseId: 'agent-tool-1',
+              input: { description: 'Explore repo' },
+              timestamp: 1,
+            },
+            {
+              id: 'agent-result-1',
+              type: 'tool_result',
+              toolUseId: 'agent-tool-1',
+              content: 'Done',
+              isError: false,
+              timestamp: 2,
+            },
+          ],
+          backgroundAgentTasks: {
+            'bash-task-1': {
+              taskId: 'bash-task-1',
+              toolUseId: 'bash-tool-1',
+              status: 'running',
+              taskType: 'local_bash',
+              description: 'Run smoke checks',
+              startedAt: 1,
+              updatedAt: 2,
+            },
+          },
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {
+            'agent-task-1': {
+              taskId: 'agent-task-1',
+              toolUseId: 'agent-tool-1',
+              status: 'completed',
+              summary: 'Explore repo',
+              timestamp: '2026-07-03T00:00:00.000Z',
+            },
+          },
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    const chatColumn = screen.getByTestId('active-session-chat-column')
+    const panel = screen.getByTestId('session-activity-panel')
+    expect(chatColumn).not.toContainElement(panel)
+    expect(panel).toHaveAttribute('data-placement', 'rail')
+    expect(panel).toHaveAttribute('role', 'dialog')
+    expect(within(panel).getByText('Implement panel')).toBeInTheDocument()
+    expect(within(panel).getAllByText('Run smoke checks')).not.toHaveLength(0)
+    expect(within(panel).getAllByText('Explore repo')).not.toHaveLength(0)
+    expect(chatColumn).toContainElement(screen.getByTestId('chat-input'))
+    expect(screen.queryByTestId('session-task-bar')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('background-tasks-button')).not.toBeInTheDocument()
+
+    act(() => {
+      useWorkspaceStore.getState().openTarget(sessionId, { kind: 'file', path: 'src/a.ts' })
+    })
+
+    expect(screen.getByTestId('workbench-panel')).toBeInTheDocument()
+    expect(screen.queryByTestId('session-activity-panel')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+    })
+  })
+
+  it('does not render the activity panel when the store is open without visible activity', async () => {
+    const sessionId = 'activity-open-empty-session'
+
+    useActivityPanelStore.getState().open(sessionId)
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Empty Activity Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Empty Activity Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          backgroundAgentTasks: {},
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.queryByTestId('session-activity-panel')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+    }, { timeout: 4000 })
+  })
+
+  it('on a phone, publishes the activity to the top bar pill instead of throwing the sheet over the chat', async () => {
+    viewportMocks.isMobile = true
+    const sessionId = 'activity-phone-session'
+    useCLITaskStore.setState({ fetchSessionTasks: vi.fn().mockResolvedValue(undefined) })
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Phone Activity Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Phone Activity Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [],
+          chatState: 'thinking',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          backgroundAgentTasks: {},
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+    act(() => {
+      useCLITaskStore.setState({
+        sessionId,
+        tasks: [{
+          id: 'task-1',
+          subject: 'Draft implementation plan',
+          description: 'Create the first activity row',
+          status: 'in_progress',
+          blocks: [],
+          blockedBy: [],
+          taskListId: sessionId,
+        }],
+        completedAndDismissed: false,
+      })
+    })
+
+    await waitFor(() => {
+      expect(useActivityPanelStore.getState().mobileSummaryBySession[sessionId]).toEqual({ visible: true, count: 1 })
+    })
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+
+    act(() => useActivityPanelStore.getState().open(sessionId))
+    expect(await screen.findByTestId('session-activity-sheet')).toBeInTheDocument()
+    act(() => useActivityPanelStore.getState().close())
+  })
+
+  it('keeps new activity collapsed until opened and seals unfinished tasks when the turn becomes idle', async () => {
+    const sessionId = 'activity-auto-open-session'
+    const fetchSessionTasks = vi.fn().mockResolvedValue(undefined)
+
+    useCLITaskStore.setState({ fetchSessionTasks })
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Auto Open Activity Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Auto Open Activity Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [],
+          chatState: 'thinking',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          backgroundAgentTasks: {},
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.queryByTestId('session-activity-panel')).not.toBeInTheDocument()
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+
+    act(() => {
+      useCLITaskStore.setState({
+        sessionId,
+        tasks: [{
+          id: 'task-1',
+          subject: 'Draft implementation plan',
+          description: 'Create the first activity row',
+          status: 'in_progress',
+          blocks: [],
+          blockedBy: [],
+          taskListId: sessionId,
+        }],
+        completedAndDismissed: false,
+      })
+    })
+
+    // #1639: the activity badge may update without reopening the conversation overlay.
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+    expect(screen.queryByTestId('session-activity-panel')).not.toBeInTheDocument()
+
+    act(() => useActivityPanelStore.getState().open(sessionId))
+    expect(screen.getByTestId('session-activity-panel')).toHaveAttribute('data-placement', 'rail')
+    expect(screen.getByText('Draft implementation plan')).toBeInTheDocument()
+    expect(within(screen.getByTestId('session-activity-panel')).getByLabelText('Task in progress')).toBeInTheDocument()
+
+    act(() => {
+      useChatStore.setState((state) => ({
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...state.sessions[sessionId]!,
+            chatState: 'idle',
+          },
+        },
+      }))
+    })
+
+    expect(within(screen.getByTestId('session-activity-panel')).getByLabelText('Stopped')).toBeInTheDocument()
+    expect(within(screen.getByTestId('session-activity-panel')).queryByLabelText('Task in progress')).not.toBeInTheDocument()
+    expect(screen.queryByText(/session active|会话活跃中/)).not.toBeInTheDocument()
+
+    act(() => {
+      useActivityPanelStore.getState().close(sessionId)
+      useCLITaskStore.setState({ tasks: [] })
+    })
+    act(() => {
+      useChatStore.setState((state) => ({
+        sessions: { ...state.sessions, [sessionId]: { ...state.sessions[sessionId]!, chatState: 'thinking' } },
+      }))
+      useCLITaskStore.setState({ tasks: [{
+        id: 'task-2', subject: 'Next turn task', description: '', status: 'in_progress',
+        blocks: [], blockedBy: [], taskListId: sessionId,
+      }] })
+    })
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+    expect(screen.queryByTestId('session-activity-panel')).not.toBeInTheDocument()
+  })
+
+  it('renders completed historical TodoWrite activity in the rail', () => {
+    const sessionId = 'activity-todowrite-history-session'
+
+    useActivityPanelStore.getState().open(sessionId)
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'TodoWrite History Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'TodoWrite History Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{
+            id: 'todo-1',
+            type: 'tool_use',
+            toolName: 'TodoWrite',
+            toolUseId: 'todo-1',
+            input: {
+              todos: [
+                { content: 'Review historical implementation', status: 'completed' },
+              ],
+            },
+            timestamp: 1,
+          }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          backgroundAgentTasks: {},
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    const panel = screen.getByTestId('session-activity-panel')
+    expect(panel).toHaveAttribute('data-placement', 'rail')
+    expect(within(panel).getByText('Review historical implementation')).toBeInTheDocument()
+  })
+
+  it('isolates Agent Teams tasks before the first workbench snapshot while preserving lead activity', async () => {
+    const sessionId = 'team-task-ownership-session'
+    vi.useFakeTimers()
+
+    useActivityPanelStore.getState().open(sessionId)
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Team Task Ownership',
+        createdAt: '2026-08-10T00:00:00.000Z',
+        modifiedAt: '2026-08-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Team Task Ownership', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: { [sessionId]: createDefaultSessionState() },
+    })
+    const handleServerMessage = useChatStore.getState().handleServerMessage
+    handleServerMessage(sessionId, {
+      type: 'team_created',
+      teamName: 'test-team',
+    })
+    expect(useTeamStore.getState().teamNameBySession[sessionId]).toBe('test-team')
+    expect(useTeamStore.getState().workbenchesBySession[sessionId]).toBeUndefined()
+    handleServerMessage(sessionId, {
+      type: 'tool_use_complete',
+      toolName: 'TaskCreate',
+      toolUseId: 'team-task-create',
+      input: { subject: 'Review shared auth task' },
+    })
+    handleServerMessage(sessionId, {
+      type: 'tool_use_complete',
+      toolName: 'TodoWrite',
+      toolUseId: 'lead-personal-todo',
+      input: {
+        todos: [{ content: 'Summarize team delivery', status: 'in_progress' }],
+      },
+    })
+    useCLITaskStore.setState({
+      sessionId,
+      tasks: [{
+        id: '1',
+        subject: 'Finish the lead release checklist',
+        description: 'Created before the team task list existed',
+        status: 'in_progress',
+        blocks: [],
+        blockedBy: [],
+        taskListId: sessionId,
+      }],
+      fetchSessionTasks: vi.fn().mockResolvedValue(undefined),
+    })
+
+    await act(async () => {
+      render(<ActiveSession />)
+      await Promise.resolve()
+    })
+
+    const panel = screen.getByTestId('session-activity-panel')
+    expect(within(panel).getByText('Finish the lead release checklist')).toBeInTheDocument()
+    expect(within(panel).getByText('Summarize team delivery')).toBeInTheDocument()
+    expect(within(panel).queryByText('Review shared auth task')).not.toBeInTheDocument()
+    vi.clearAllTimers()
+  })
+
+  it('ignores unrelated active team rows when deciding Activity visibility', async () => {
+    const sessionId = 'activity-unrelated-team-session'
+
+    useActivityPanelStore.getState().open(sessionId)
+    useTeamStore.setState({
+      teams: [],
+      activeTeam: {
+        name: 'other-team',
+        leadAgentId: 'team-lead@other-team',
+        leadSessionId: 'other-session',
+        members: [
+          {
+            agentId: 'security-reviewer@other-team',
+            role: 'security-reviewer',
+            status: 'running',
+            currentTask: 'Auditing another session',
+          },
+        ],
+      },
+      memberColors: new Map(),
+      error: null,
+    })
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Unrelated Team Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Unrelated Team Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          backgroundAgentTasks: {},
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.queryByText('security-reviewer')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('session-activity-panel')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+    }, { timeout: 4000 })
+  })
+
+  it('opens a SubAgent detail tab from the activity panel', () => {
+    const sessionId = 'activity-subagent-open-session'
+
+    useActivityPanelStore.getState().open(sessionId)
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'SubAgent Activity Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'SubAgent Activity Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [
+            {
+              id: 'agent-tool-1',
+              type: 'tool_use',
+              toolName: 'Agent',
+              toolUseId: 'agent-tool-1',
+              input: { description: 'Review workspace seams' },
+              timestamp: 1,
+            },
+            {
+              id: 'agent-result-1',
+              type: 'tool_result',
+              toolUseId: 'agent-tool-1',
+              content: 'Done',
+              isError: false,
+              timestamp: 2,
+            },
+          ],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          backgroundAgentTasks: {},
+          agentTaskNotifications: {
+            'agent-task-1': {
+              taskId: 'agent-task-1',
+              toolUseId: 'agent-tool-1',
+              status: 'completed',
+              summary: 'Review workspace seams',
+              timestamp: '2026-07-03T00:00:00.000Z',
+            },
+          },
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Open run Review workspace seams.*Completed/ }))
+
+    const tab = useTabStore.getState().tabs.find((candidate) => candidate.sessionId === '__subagent__activity-subagent-open-session__agent-tool-1')
+    expect(tab).toMatchObject({
+      sessionId: '__subagent__activity-subagent-open-session__agent-tool-1',
+      title: 'Review workspace seams',
+      type: 'subagent',
+      status: 'idle',
+      sourceSessionId: sessionId,
+      subagentToolUseId: 'agent-tool-1',
+      subagentTaskId: 'agent-task-1',
+    })
+    expect(useTabStore.getState().activeTabId).toBe('__subagent__activity-subagent-open-session__agent-tool-1')
+    expect(useActivityPanelStore.getState().openSessionId).toBe(
+      '__subagent__activity-subagent-open-session__agent-tool-1',
+    )
+  })
+
+  it('opens the full team workbench directly from the header strip', () => {
+    const sessionId = 'team-activity-panel-session'
+
+    useActivityPanelStore.getState().open(sessionId)
+    useTeamStore.setState({
+      teams: [],
+      activeTeam: {
+        name: 'test-team',
+        leadAgentId: 'team-lead@test-team',
+        leadSessionId: sessionId,
+        members: [
+          {
+            agentId: 'team-lead@test-team',
+            role: 'team-lead',
+            status: 'running',
+          },
+          {
+            agentId: 'security-reviewer@test-team',
+            role: 'security-reviewer',
+            status: 'running',
+            currentTask: 'Auditing auth flow',
+          },
+        ],
+      },
+      memberColors: new Map(),
+      error: null,
+      workbenchesBySession: {
+        [sessionId]: {
+          teamName: 'test-team',
+          loading: false,
+          error: null,
+          snapshots: [{
+            version: 'v1',
+            generatedAt: '2026-08-08T00:00:00.000Z',
+            team: {
+              name: 'test-team',
+              leadAgentId: 'team-lead@test-team',
+              leadSessionId: sessionId,
+              members: [
+                { agentId: 'team-lead@test-team', role: 'team-lead', status: 'running' },
+                {
+                  agentId: 'security-reviewer@test-team',
+                  role: 'security-reviewer',
+                  status: 'running',
+                  currentTask: 'Auditing auth flow',
+                },
+              ],
+            },
+            tasks: [],
+            messages: [],
+          }],
+        },
+      },
+    })
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Team Activity Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: '2026-05-07T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Team Activity Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          backgroundAgentTasks: {},
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    // Discovering a team must not seize the right-hand slot or compact the
+    // transcript; the header strip is the whole of its main-session footprint.
+    const strip = screen.getByTestId('agent-teams-strip')
+    expect(screen.queryByTestId('agent-teams-workbench-panel')).not.toBeInTheDocument()
+    expect(screen.getByTestId('message-list')).toHaveAttribute('data-compact', 'false')
+
+    act(() => {
+      fireEvent.click(strip)
+    })
+
+    const teamTabId = `__team__${sessionId}`
+    expect(useTabStore.getState().activeTabId).toBe(teamTabId)
+    expect(useTabStore.getState().tabs.find((tab) => tab.sessionId === teamTabId)).toMatchObject({
+      type: 'team',
+      teamLeadSessionId: sessionId,
+      title: 'test-team',
+    })
+    expect(screen.queryByTestId('agent-teams-workbench-panel')).not.toBeInTheDocument()
+    expect(useTeamStore.getState().workbenchesBySession[sessionId]?.snapshots).toHaveLength(1)
+  })
+
+  it('shows an interrupted team as interrupted in the header strip, though its tasks read as running', () => {
+    const sessionId = 'team-interrupted-strip-session'
+    useTeamStore.setState({
+      workbenchesBySession: {
+        [sessionId]: {
+          teamName: 'cut-team', loading: false, error: null,
+          snapshots: [{
+            version: 'v1', generatedAt: '2026-10-27T00:00:00.000Z',
+            team: {
+              name: 'cut-team', leadAgentId: 'team-lead@cut-team', leadSessionId: sessionId,
+              members: [
+                { agentId: 'team-lead@cut-team', role: 'team-lead', status: 'idle' },
+                { agentId: 'lister@cut-team', name: 'lister', role: 'lister', status: 'idle' },
+              ],
+            },
+            tasks: [{ id: '1', subject: 'List files', description: '', status: 'pending', owner: 'lister', blocks: [], blockedBy: [], taskListId: 'cut-team' }],
+            messages: [],
+          }],
+        },
+      },
+    })
+    useSessionStore.setState({
+      sessions: [{ id: sessionId, title: 'Interrupted Team Session', createdAt: '2026-10-27T00:00:00.000Z', modifiedAt: '2026-10-27T00:00:00.000Z', messageCount: 1, projectPath: '/workspace/project', workDir: '/workspace/project', workDirExists: true }],
+      activeSessionId: sessionId, isLoading: false, error: null,
+    })
+    useTabStore.setState({ tabs: [{ sessionId, title: 'Interrupted Team Session', type: 'session', status: 'idle' }], activeTabId: sessionId })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          chatState: 'idle', connectionState: 'connected', streamingText: '', streamingToolInput: '',
+          activeToolUseId: null, activeToolName: null, activeThinkingId: null, pendingPermission: null, pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 }, streamingResponseChars: 0, elapsedSeconds: 0, statusVerb: '',
+          slashCommands: [], backgroundAgentTasks: {}, agentTaskNotifications: {}, elapsedTimer: null,
+        },
+      },
+    })
+    try {
+      render(<ActiveSession />)
+      expect(screen.getByTestId('agent-teams-strip')).toHaveTextContent('Parallel execution')
+
+      act(() => {
+        useTeamPlanStore.setState({ bySession: { [sessionId]: {
+          plan: { teamName: 'cut-team', state: 'interrupted' } as TeamPlanRecord,
+          loading: false, busy: false, error: null, conflict: false,
+        } } })
+      })
+      const strip = screen.getByTestId('agent-teams-strip')
+      expect(strip).toHaveTextContent('Interrupted')
+      expect(strip).not.toHaveTextContent('Parallel execution')
+    } finally {
+      useTeamPlanStore.setState({ bySession: {} })
+    }
+  })
+
+  it('updates the Team workbench without leaking its DAG, roster, or transcript spawns into main Activity', async () => {
+    const sessionId = 'team-activity-runtime-state-session'
+    const teamName = 'runtime-state-team'
+    const taskDefinitions = [
+      { id: 'A', subject: 'Map routes' },
+      { id: 'B', subject: 'Review security' },
+      { id: 'C', subject: 'Verify integration' },
+      { id: 'D', subject: 'Write report' },
+    ]
+    const snapshot = (
+      version: string,
+      statuses: Record<string, 'pending' | 'in_progress' | 'completed'>,
+    ): TeamWorkbenchSnapshot => ({
+      version,
+      generatedAt: `2026-08-10T00:00:0${version === 'v1' ? '1' : '2'}.000Z`,
+      team: {
+        name: teamName,
+        leadAgentId: `team-lead@${teamName}`,
+        leadSessionId: sessionId,
+        createdAt: '2026-08-10T00:00:00.000Z',
+        members: [
+          { agentId: `team-lead@${teamName}`, role: 'team-lead', status: 'running' },
+          { agentId: `route-mapper@${teamName}`, role: 'route-mapper', status: 'running' },
+          { agentId: `security-reviewer@${teamName}`, role: 'security-reviewer', status: 'running' },
+          { agentId: `integration-tester@${teamName}`, role: 'integration-tester', status: 'running' },
+        ],
+      },
+      tasks: taskDefinitions.map(({ id, subject }) => ({
+        id,
+        subject,
+        description: subject,
+        status: statuses[id] ?? 'pending',
+        blocks: [],
+        blockedBy: [],
+        taskListId: teamName,
+      })),
+      messages: version === 'v2'
+        ? [{
+            id: 'route-mapper-to-security-reviewer',
+            from: 'route-mapper',
+            to: 'security-reviewer',
+            recipients: ['security-reviewer'],
+            kind: 'direct',
+            text: '**Routes mapped.** Review the auth boundary.',
+            timestamp: '2026-08-10T00:00:02.000Z',
+          }]
+        : [],
+    })
+    const initialSnapshot = snapshot('v1', {
+      A: 'pending',
+      B: 'pending',
+      C: 'pending',
+      D: 'completed',
+    })
+    const completedSnapshot = snapshot('v2', {
+      A: 'completed',
+      B: 'completed',
+      C: 'completed',
+      D: 'completed',
+    })
+
+    teamApiMocks.getWorkbenchForSession.mockResolvedValue({
+      sessionId,
+      teamName,
+      source: 'live',
+      snapshots: [initialSnapshot],
+    })
+    teamApiMocks.getTeam.mockResolvedValue(completedSnapshot.team)
+    teamApiMocks.getWorkbench.mockResolvedValue(completedSnapshot)
+    useActivityPanelStore.getState().open(sessionId)
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Runtime State Team',
+        createdAt: '2026-08-10T00:00:00.000Z',
+        modifiedAt: '2026-08-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Runtime State Team', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          backgroundAgentTasks: {},
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    useChatStore.getState().handleServerMessage(sessionId, {
+      type: 'team_created',
+      teamName,
+    })
+    useChatStore.getState().sendMessage(sessionId, 'Coordinate the four-task team')
+    for (const { id, subject } of taskDefinitions) {
+      useChatStore.getState().handleServerMessage(sessionId, {
+        type: 'tool_use_complete',
+        toolName: 'TaskCreate',
+        toolUseId: `create-${id}`,
+        input: { subject },
+      })
+      useChatStore.getState().handleServerMessage(sessionId, {
+        type: 'tool_result',
+        toolUseId: `create-${id}`,
+        content: `Task #${id} created successfully: ${subject}`,
+        isError: false,
+      })
+    }
+    for (const id of ['A', 'B', 'C']) {
+      useChatStore.getState().handleServerMessage(sessionId, {
+        type: 'tool_use_complete',
+        toolName: 'TaskUpdate',
+        toolUseId: `failed-update-${id}`,
+        input: { taskId: id, status: 'completed' },
+      })
+      useChatStore.getState().handleServerMessage(sessionId, {
+        type: 'tool_result',
+        toolUseId: `failed-update-${id}`,
+        content: 'Task not found',
+        isError: false,
+      })
+    }
+    useChatStore.getState().handleServerMessage(sessionId, {
+      type: 'tool_use_complete',
+      toolName: 'TaskUpdate',
+      toolUseId: 'completed-update-D',
+      input: { taskId: 'D', status: 'completed' },
+    })
+    useChatStore.getState().handleServerMessage(sessionId, {
+      type: 'tool_result',
+      toolUseId: 'completed-update-D',
+      content: 'Updated task #D status',
+      isError: false,
+    })
+    useChatStore.getState().handleServerMessage(sessionId, {
+      type: 'tool_use_complete',
+      toolName: 'Agent',
+      toolUseId: 'spawn-late-reviewer',
+      input: {
+        team_name: teamName,
+        name: 'late-reviewer',
+        description: 'Review the shared Team DAG',
+      },
+    })
+    useChatStore.getState().handleServerMessage(sessionId, {
+      type: 'tool_result',
+      toolUseId: 'spawn-late-reviewer',
+      content: 'Agent launched successfully',
+      isError: false,
+    })
+    useChatStore.getState().handleServerMessage(sessionId, {
+      type: 'message_complete',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
+
+    render(<ActiveSession />)
+
+    await waitFor(() => {
+      expect(within(screen.getByTestId('agent-teams-strip')).getByText(/1\/4/)).toBeInTheDocument()
+    })
+    // Opening a stale Activity preference must not give Team-only state a
+    // panel. The shared DAG, roster, and member launch all belong to the Team
+    // tab/workbench, not to the main agent's run.
+    expect(screen.queryByTestId('session-activity-panel')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+    }, { timeout: 4000 })
+
+    act(() => {
+      useChatStore.getState().handleServerMessage(sessionId, {
+        type: 'team_workbench_updated',
+        teamName,
+      })
+    })
+
+    await waitFor(() => {
+      expect(within(screen.getByTestId('agent-teams-strip')).getByText(/4\/4/)).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('session-activity-panel')).not.toBeInTheDocument()
+    const timeline = useTeamStore.getState().workbenchesBySession[sessionId]
+    expect(timeline?.snapshots.map(current => current.version)).toEqual(['v1', 'v2'])
+    expect(timeline?.snapshots.at(-1)?.messages).toEqual([
+      expect.objectContaining({ id: 'route-mapper-to-security-reviewer' }),
+    ])
+
+    act(() => {
+      useChatStore.getState().handleServerMessage(sessionId, {
+        type: 'tool_use_complete',
+        toolName: 'Agent',
+        toolUseId: 'direct-main-subagent',
+        input: { description: 'Inspect a main-session seam' },
+      })
+    })
+
+    // Filtering is ownership-based, not a blanket Activity shutdown: a
+    // direct SubAgent spawned by the main session still appears when Activity is opened.
+    act(() => useActivityPanelStore.getState().open(sessionId))
+    const panel = await screen.findByTestId('session-activity-panel')
+    expect(within(panel).getByText('Inspect a main-session seam')).toBeInTheDocument()
+  })
+
+  it('clears the last visible background task by closing Activity while preserving later runs', async () => {
+    const sessionId = 'activity-background-clear-session'
+    const otherSessionId = 'activity-background-other-session'
+
+    useActivityPanelStore.getState().open(sessionId)
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: sessionId,
+          title: 'Background Clear Session',
+          createdAt: '2026-05-07T00:00:00.000Z',
+          modifiedAt: '2026-05-07T00:00:00.000Z',
+          messageCount: 1,
+          projectPath: '/workspace/project',
+          workDir: '/workspace/project',
+          workDirExists: true,
+        },
+        {
+          id: otherSessionId,
+          title: 'Other Session',
+          createdAt: '2026-05-07T00:00:00.000Z',
+          modifiedAt: '2026-05-07T00:00:00.000Z',
+          messageCount: 1,
+          projectPath: '/workspace/project',
+          workDir: '/workspace/project',
+          workDirExists: true,
+        },
+      ],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [
+        { sessionId, title: 'Background Clear Session', type: 'session', status: 'idle' },
+        { sessionId: otherSessionId, title: 'Other Session', type: 'session', status: 'idle' },
+      ],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          backgroundAgentTasks: {
+            'bash-task-1': {
+              taskId: 'bash-task-1',
+              toolUseId: 'bash-tool-1',
+              status: 'completed',
+              taskType: 'local_bash',
+              description: 'Finished smoke run',
+              startedAt: 1000,
+              updatedAt: 2000,
+            },
+          },
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+        [otherSessionId]: {
+          messages: [{ id: 'msg-2', type: 'assistant_text', content: 'other', timestamp: 2 }],
+          backgroundAgentTasks: {},
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.getByText('Finished smoke run')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /clear finished/i }))
+
+    expect(screen.queryByText('Finished smoke run')).not.toBeInTheDocument()
+    // The panel close is debounced so transient empty states cannot hide it.
+    await waitFor(() => {
+      expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+    }, { timeout: 4000 })
+    expect(screen.queryByTestId('session-activity-panel')).not.toBeInTheDocument()
+
+    act(() => {
+      useTabStore.getState().setActiveTab(otherSessionId)
+    })
+    act(() => {
+      useTabStore.getState().setActiveTab(sessionId)
+    })
+
+    expect(screen.queryByText('Finished smoke run')).not.toBeInTheDocument()
+
+    act(() => {
+      useChatStore.setState((state) => ({
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...state.sessions[sessionId]!,
+            backgroundAgentTasks: {
+              'bash-task-1': {
+                taskId: 'bash-task-1',
+                toolUseId: 'bash-tool-2',
+                status: 'completed',
+                taskType: 'local_bash',
+                description: 'Finished smoke rerun',
+                startedAt: 3000,
+                updatedAt: 4000,
+              },
+            },
+          },
+        },
+      }))
+    })
+
+    expect(screen.queryByText('Finished smoke rerun')).not.toBeInTheDocument()
+
+    act(() => {
+      useActivityPanelStore.getState().open(sessionId)
+    })
+
+    expect(screen.getByText('Finished smoke rerun')).toBeInTheDocument()
+  })
+
+  it('keeps the session header active while a background task is still running after the turn completes', () => {
+    const sessionId = 'background-shell-running-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Background Shell Session',
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: new Date().toISOString(),
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Background Shell Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'task started', timestamp: 1 }],
+          backgroundAgentTasks: {
+            'bash-task-1': {
+              taskId: 'bash-task-1',
+              toolUseId: 'bash-tool-1',
+              status: 'running',
+              taskType: 'local_bash',
+              description: 'Run page integration checks',
+              startedAt: 1,
+              updatedAt: 2,
+            },
+          },
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.getByText(/session active|会话活跃中/)).toBeInTheDocument()
+    expect(screen.getByTestId('chat-input')).toHaveAttribute('data-variant', 'default')
+  })
+
+  it('refreshes CLI tasks repeatedly while a turn is active', async () => {
+    vi.useFakeTimers()
+
+    const sessionId = 'polling-session'
+    const originalCliTaskState = useCLITaskStore.getState()
+    const fetchSessionTasks = vi.fn().mockResolvedValue(undefined)
+
+    useCLITaskStore.setState({
+      sessionId,
+      tasks: [],
+      fetchSessionTasks,
+    })
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Polling Session',
+        createdAt: '2026-04-10T00:00:00.000Z',
+        modifiedAt: '2026-04-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '',
+        workDir: null,
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Polling Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [],
+          chatState: 'thinking',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    const { unmount } = render(<ActiveSession />)
+
+    expect(fetchSessionTasks).toHaveBeenCalledWith(sessionId)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2200)
+    })
+
+    expect(
+      fetchSessionTasks.mock.calls.filter(([currentSessionId]) => currentSessionId === sessionId),
+    ).toHaveLength(4)
+
+    unmount()
+    useCLITaskStore.setState(originalCliTaskState)
+  })
+
+  it('stops polling CLI tasks once the store gives up, and polls again when the next turn starts', async () => {
+    vi.useFakeTimers()
+
+    const sessionId = 'halted-polling-session'
+    const originalCliTaskState = useCLITaskStore.getState()
+    const fetchSessionTasks = vi.fn().mockResolvedValue(undefined)
+    const setChatState = (chatState: 'idle' | 'thinking') => act(() => {
+      useChatStore.setState((state) => ({
+        sessions: { ...state.sessions, [sessionId]: { ...state.sessions[sessionId]!, chatState } },
+      }))
+    })
+
+    useCLITaskStore.setState({ sessionId, tasks: [], fetchSessionTasks })
+    useSessionStore.setState({
+      sessions: [{ id: sessionId, title: 'Halted Polling', createdAt: '', modifiedAt: '', messageCount: 1, projectPath: '', workDir: null, workDirExists: true }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Halted Polling', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: { [sessionId]: { ...createDefaultSessionState(), connectionState: 'connected', chatState: 'thinking' } },
+    })
+
+    const { unmount } = render(<ActiveSession />)
+    expect(fetchSessionTasks).toHaveBeenCalledWith(sessionId)
+
+    act(() => useCLITaskStore.setState({ pollingHalted: true }))
+    fetchSessionTasks.mockClear()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3200)
+    })
+    expect(fetchSessionTasks).not.toHaveBeenCalled()
+
+    setChatState('idle')
+    setChatState('thinking')
+    expect(useCLITaskStore.getState().pollingHalted).toBe(false)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1100)
+    })
+    expect(fetchSessionTasks).toHaveBeenCalledWith(sessionId)
+
+    unmount()
+    useCLITaskStore.setState(originalCliTaskState)
+  })
+
+  it('renders the workspace panel to the right of chat and supports resizing', () => {
+    const sessionId = 'workspace-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Workspace Session',
+        createdAt: '2026-04-10T00:00:00.000Z',
+        modifiedAt: '2026-04-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '',
+        workDir: '/tmp/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Workspace Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+    useWorkspaceStore.getState().openTarget(sessionId, { kind: 'file', path: 'src/a.ts' })
+
+    render(<ActiveSession />)
+
+    const contentRow = screen.getByTestId('active-session-content-row')
+    const chatColumn = screen.getByTestId('active-session-chat-column')
+    const resizeHandle = screen.getByTestId('workspace-resize-handle')
+
+    const workbenchPanel = screen.getByTestId('workbench-panel')
+    // A bare 70% cap ignored the chat column's 400px floor plus the 1px
+    // handle: at 1160px of row a persisted 860px panel was clamped to 812px and
+    // ran 53px past the window edge. Both bounds now deduct that 401px.
+    expect(workbenchPanel.style.maxWidth).toBe('')
+    expect(workbenchPanel).toHaveClass('max-w-[min(70%,calc(100%_-_401px))]')
+    expect(workbenchPanel).toHaveClass('min-w-[min(420px,54%,calc(100%_-_401px))]')
+    expect(resizeHandle).toHaveClass('w-px')
+    expect(chatColumn).toHaveClass('min-w-[400px]')
+
+    expect(within(contentRow).getByTestId('message-list')).toBeInTheDocument()
+    expect(within(contentRow).getByTestId('message-list')).toHaveAttribute('data-compact', 'true')
+    // The unified surface renders a tab strip even for a single tab, and the
+    // four-entry launcher when the workspace is empty.
+    expect(within(workbenchPanel).getByTestId('workspace-surface-side')).toBeInTheDocument()
+    expect(within(workbenchPanel).getByTestId('workspace-tab-strip-side')).toBeInTheDocument()
+    expect(within(chatColumn).getByTestId('chat-input')).toBeInTheDocument()
+    expect(within(chatColumn).getByTestId('chat-input')).toHaveAttribute('data-compact', 'true')
+    expect(chatColumn).toHaveClass('flex-1')
+    expect(chatColumn).not.toHaveClass('shrink-0')
+    expect(chatColumn).not.toHaveClass('border-r')
+    expect(workbenchPanel).not.toHaveClass('border-l')
+    expect(resizeHandle).toHaveClass('w-px', 'bg-[var(--color-border)]')
+    expect(resizeHandle.firstElementChild).toHaveClass('-inset-x-1')
+    expect(contentRow.children[0]).toBe(chatColumn)
+    expect(contentRow.children[1]).toBe(resizeHandle)
+    expect(contentRow.children[2]).toBe(workbenchPanel)
+
+    act(() => {
+      fireEvent.keyDown(resizeHandle, { key: 'ArrowLeft' })
+    })
+
+    expect(useWorkspaceStore.getState().sideWidth).toBe(WORKSPACE_SIDE_DEFAULT_WIDTH + 32)
+
+    vi.spyOn(workbenchPanel, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      width: 558,
+      height: 720,
+      top: 0,
+      right: 558,
+      bottom: 720,
+      left: 0,
+      toJSON: () => ({}),
+    })
+
+    act(() => {
+      const pointerDown = createEvent.pointerDown(resizeHandle)
+      Object.defineProperty(pointerDown, 'button', { value: 0 })
+      Object.defineProperty(pointerDown, 'clientX', { value: 100 })
+      fireEvent(resizeHandle, pointerDown)
+    })
+
+    act(() => {
+      const pointerMove = new Event('pointermove')
+      Object.defineProperty(pointerMove, 'clientX', { value: 132 })
+      window.dispatchEvent(pointerMove)
+      window.dispatchEvent(new Event('pointerup'))
+    })
+
+    expect(useWorkspaceStore.getState().sideWidth).toBe(526)
+  })
+
+  it('does not render the workspace panel when closed', () => {
+    const regularSessionId = 'regular-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: regularSessionId,
+        title: 'Regular Session',
+        createdAt: '2026-04-10T00:00:00.000Z',
+        modifiedAt: '2026-04-10T00:00:00.000Z',
+        messageCount: 0,
+        projectPath: '',
+        workDir: '/tmp/project',
+        workDirExists: true,
+      }],
+      activeSessionId: regularSessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId: regularSessionId, title: 'Regular Session', type: 'session', status: 'idle' }],
+      activeTabId: regularSessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [regularSessionId]: {
+          messages: [],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+    expect(screen.queryByTestId('workspace-surface-side')).not.toBeInTheDocument()
+  })
+
+  it('keeps chat as the primary surface on mobile by hiding workspace and terminal panels', () => {
+    const sessionId = 'mobile-session'
+    viewportMocks.isMobile = true
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Mobile Session',
+        createdAt: '2026-04-10T00:00:00.000Z',
+        modifiedAt: '2026-04-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/tmp/project-root',
+        workDir: '/tmp/project-root',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Mobile Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+    useWorkspaceStore.getState().openTarget(sessionId, { kind: 'file', path: 'src/a.ts' })
+    useWorkspaceStore.getState().toggleBottomPanel(
+      sessionId,
+      useSessionStore.getState().sessions.find((entry) => entry.id === sessionId)?.workDir ?? '',
+    )
+
+    render(<ActiveSession />)
+
+    expect(screen.getByTestId('active-session-chat-column')).toHaveClass('min-w-0')
+    expect(screen.getByTestId('message-list')).toHaveAttribute('data-compact', 'false')
+    expect(screen.getByTestId('chat-input')).toHaveAttribute('data-compact', 'false')
+    expect(screen.queryByRole('heading', { name: 'Mobile Session' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-surface-side')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-resize-handle')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('session-terminal-panel')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('terminal-resize-handle')).not.toBeInTheDocument()
+  })
+
+  it('renders a bottom terminal panel in the current session cwd and can promote it to a tab', async () => {
+    const sessionId = 'terminal-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Terminal Session',
+        createdAt: '2026-04-10T00:00:00.000Z',
+        modifiedAt: '2026-04-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/tmp/project-root',
+        workDir: '/tmp/project-root/packages/app',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Terminal Session', status: 'idle' } as ReturnType<typeof useTabStore.getState>['tabs'][number]],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+    useWorkspaceStore.getState().toggleBottomPanel(
+      sessionId,
+      useSessionStore.getState().sessions.find((entry) => entry.id === sessionId)?.workDir ?? '',
+    )
+
+    render(<ActiveSession />)
+
+    const panel = screen.getByTestId('session-terminal-panel')
+    const resizeHandle = screen.getByTestId('terminal-resize-handle')
+    const host = screen.getByTestId(`workspace-terminal-host-1`)
+
+    expect(panel).toHaveStyle({ height: `${WORKSPACE_BOTTOM_DEFAULT_HEIGHT}px` })
+    expect(host).toHaveAttribute('data-cwd', '/tmp/project-root/packages/app')
+    expect(host).toHaveAttribute('data-active', 'true')
+    expect(host).toHaveAttribute('data-preserve-on-unmount', 'true')
+    expect(resizeHandle).toHaveAttribute('aria-valuemin', `${WORKSPACE_BOTTOM_MIN_HEIGHT}`)
+    expect(resizeHandle).toHaveAttribute('aria-valuemax', `${WORKSPACE_BOTTOM_MAX_HEIGHT}`)
+    // The hit target overlays the existing panel border instead of adding a
+    // second visible line and a spacer above the terminal tabs.
+    expect(panel).toHaveClass('relative', 'border-t')
+    expect(resizeHandle).toHaveClass('absolute', 'bg-transparent')
+    expect(resizeHandle.firstElementChild).toHaveClass('bg-transparent')
+
+    act(() => {
+      fireEvent.keyDown(resizeHandle, { key: 'ArrowUp' })
+    })
+    expect(useWorkspaceStore.getState().bottomHeight).toBe(WORKSPACE_BOTTOM_DEFAULT_HEIGHT + 24)
+
+    await act(async () => {
+      const pointerDown = createEvent.pointerDown(resizeHandle)
+      Object.defineProperty(pointerDown, 'button', { value: 0 })
+      Object.defineProperty(pointerDown, 'clientY', { value: 300 })
+      fireEvent(resizeHandle, pointerDown)
+    })
+
+    await act(async () => {
+      const pointerMove = new Event('pointermove')
+      Object.defineProperty(pointerMove, 'clientY', { value: 260 })
+      window.dispatchEvent(pointerMove)
+      window.dispatchEvent(new Event('pointerup'))
+    })
+    expect(useWorkspaceStore.getState().bottomHeight).toBe(WORKSPACE_BOTTOM_DEFAULT_HEIGHT + 64)
+
+    act(() => {
+      fireEvent.keyDown(resizeHandle, { key: 'End' })
+    })
+    expect(useWorkspaceStore.getState().bottomHeight).toBe(WORKSPACE_BOTTOM_MAX_HEIGHT)
+
+    act(() => {
+      fireEvent.keyDown(resizeHandle, { key: 'Home' })
+    })
+    expect(useWorkspaceStore.getState().bottomHeight).toBe(WORKSPACE_BOTTOM_MIN_HEIGHT)
+
+    act(() => {
+      fireEvent.doubleClick(resizeHandle)
+    })
+    expect(useWorkspaceStore.getState().bottomHeight).toBe(WORKSPACE_BOTTOM_DEFAULT_HEIGHT)
+
+    // Moving the terminal to the side dock keeps the same PTY and creates no
+    // global app tab — the old "Open in Tab" promotion is gone on purpose.
+    const terminalTabId = useWorkspaceStore.getState().getTabs(sessionId, 'bottom')[0]!.id
+    const runtimeId = (useWorkspaceStore.getState().getTab(sessionId, terminalTabId) as {
+      runtimeId: string
+    }).runtimeId
+
+    act(() => {
+      useWorkspaceStore.getState().moveTabToDock(sessionId, terminalTabId, 'side')
+    })
+
+    expect(useWorkspaceStore.getState().getTabs(sessionId, 'side')).toHaveLength(1)
+    expect((useWorkspaceStore.getState().getTab(sessionId, terminalTabId) as {
+      runtimeId: string
+    }).runtimeId).toBe(runtimeId)
+    expect(useTabStore.getState().tabs.some((tab) => tab.type === 'terminal')).toBe(false)
+  })
+
+  it('keeps the docked terminal usable on a new empty session', () => {
+    const sessionId = 'empty-terminal-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Empty Terminal Session',
+        createdAt: '2026-04-10T00:00:00.000Z',
+        modifiedAt: '2026-04-10T00:00:00.000Z',
+        messageCount: 0,
+        projectPath: '/tmp/project-root',
+        workDir: '/tmp/project-root',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Empty Terminal Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+    useWorkspaceStore.getState().toggleBottomPanel(
+      sessionId,
+      useSessionStore.getState().sessions.find((entry) => entry.id === sessionId)?.workDir ?? '',
+    )
+
+    render(<ActiveSession />)
+
+    expect(screen.getByTestId('active-session-chat-column')).toHaveClass('min-h-0')
+    expect(screen.getByTestId('empty-session-hero')).toHaveClass('min-h-0')
+    expect(screen.getByTestId('empty-session-hero')).toHaveClass('pb-6')
+    expect(screen.getByTestId('empty-session-hero')).not.toHaveClass('pb-32')
+    // The compact hero keeps the rotating star, at 56px instead of 80px.
+    const heroSeal = screen.getByTestId('empty-session-hero').querySelector('[data-testid="brand-seal"]')
+    expect(heroSeal).toHaveClass('h-14', 'w-14')
+    expect(heroSeal?.querySelectorAll('picture')).toHaveLength(2)
+    expect(screen.getByTestId('session-terminal-panel')).toHaveStyle({ height: '420px' })
+    expect(screen.getByTestId('terminal-resize-handle')).toHaveAttribute('aria-valuemax', '760')
+  })
+
+  it('keeps the docked terminal mounted when the panel is hidden', async () => {
+    const sessionId = 'terminal-hide-session'
+
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Terminal Hide Session',
+        createdAt: '2026-04-10T00:00:00.000Z',
+        modifiedAt: '2026-04-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/tmp/project-root',
+        workDir: '/tmp/project-root',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Terminal Hide Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'msg-1', type: 'assistant_text', content: 'hello', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+    useWorkspaceStore.getState().toggleBottomPanel(
+      sessionId,
+      useSessionStore.getState().sessions.find((entry) => entry.id === sessionId)?.workDir ?? '',
+    )
+
+    render(<ActiveSession />)
+
+    const runtimeIdBefore = screen
+      .getByTestId('workspace-terminal-host-1')
+      .getAttribute('data-runtime-id')
+    expect(runtimeIdBefore).toBeTruthy()
+
+    act(() => useWorkspaceStore.getState().toggleBottomPanel(sessionId, '/tmp/project'))
+
+    expect(useWorkspaceStore.getState().getSession(sessionId).bottomOpen).toBe(false)
+    // Hidden, not unmounted, and still the same PTY: re-opening must come back
+    // to the same shell rather than starting a new one.
+    expect(screen.getByTestId('session-terminal-panel')).toHaveClass('hidden')
+    expect(screen.getByTestId('workspace-terminal-host-1')).toHaveAttribute('data-active', 'false')
+    expect(screen.getByTestId('workspace-terminal-host-1'))
+      .toHaveAttribute('data-runtime-id', runtimeIdBefore!)
+  })
+})
+
+describe('ActiveSession header', () => {
+  // 回归锚点：标题曾经是 text-[22px] 且不截断，长标题会折成两行再加一行元数据，
+  // 连同 pt-6/pb-4 把聊天区顶掉约 120px。标题必须单行截断，元数据留在它下面那行。
+  const longTitle = 'Create a todo_cccc-ccccbb directory, write a throwaway todo app with react + vite + tailwindcss, then start it'
+
+  function mountSessionWithLongTitle(sessionId: string) {
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: longTitle,
+        createdAt: '2026-05-07T00:00:00.000Z',
+        modifiedAt: new Date().toISOString(),
+        messageCount: 2,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: longTitle, type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [
+            { id: 'msg-1', type: 'user_text', content: 'hi', timestamp: 1 },
+            { id: 'msg-2', type: 'assistant_text', content: 'hello', timestamp: 2 },
+          ],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 12000, output_tokens: 3000 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+  }
+
+  it('keeps a long title on one truncated line and hovers the full text', () => {
+    const sessionId = 'long-title-session'
+    mountSessionWithLongTitle(sessionId)
+
+    render(<ActiveSession />)
+
+    const heading = within(screen.getByTestId('session-header')).getByRole('heading', { level: 1 })
+    expect(heading).toHaveTextContent(longTitle)
+    expect(heading).toHaveAttribute('title', longTitle)
+    expect(heading).toHaveClass('truncate')
+    expect(heading.className).not.toMatch(/text-\[22px\]/)
+  })
+
+  it('gives the metadata its own line under the title', () => {
+    const sessionId = 'header-meta-session'
+    mountSessionWithLongTitle(sessionId)
+
+    render(<ActiveSession />)
+
+    expect(screen.getByTestId('session-chat-surface')).toHaveAttribute(
+      'data-session-chat-kind',
+      'main',
+    )
+    const header = screen.getByTestId('session-header')
+    const heading = within(header).getByRole('heading', { level: 1 })
+    const titleRow = heading.parentElement as HTMLElement
+    const meta = titleRow.nextElementSibling as HTMLElement
+
+    // 元数据挤在标题右侧时会离标题很远，读起来像飘在角落的另一块内容。
+    expect(within(titleRow).queryByText('2 messages')).not.toBeInTheDocument()
+    expect(within(meta).getByText('2 messages')).toBeInTheDocument()
+    // Token usage is not part of the header's metadata.
+    expect(within(meta).queryByText(/API tokens/)).toBeNull()
+    expect(header).toHaveClass('py-3.5')
+  })
+
+  it('leads the metadata with where the session runs: project folder, then branch', async () => {
+    const sessionId = 'header-place-session'
+    mountSessionWithLongTitle(sessionId)
+
+    render(<ActiveSession />)
+
+    const project = screen.getByTestId('session-header-project')
+    expect(project).toHaveTextContent('project')
+    expect(project.querySelector('svg.lucide-folder')).toHaveAttribute('aria-hidden', 'true')
+    // The branch arrives with the git info request.
+    const branch = await screen.findByTestId('session-header-branch')
+    expect(branch).toHaveTextContent('main')
+    expect(branch.querySelector('svg.lucide-git-branch')).toHaveAttribute('aria-hidden', 'true')
+
+    const metaRow = project.parentElement as HTMLElement
+    const order = [...metaRow.children].map((child) => child.getAttribute('data-testid'))
+    expect(order.indexOf('session-header-project')).toBe(0)
+    expect(order.indexOf('session-header-branch')).toBeGreaterThan(0)
+  })
+
+  it('keeps the separators between metadata items, never in front of them', () => {
+    const sessionId = 'idle-header-session'
+    mountSessionWithLongTitle(sessionId)
+
+    render(<ActiveSession />)
+
+    const heading = within(screen.getByTestId('session-header')).getByRole('heading', { level: 1 })
+    const meta = (heading.parentElement as HTMLElement).nextElementSibling as HTMLElement
+
+    // 分隔符（3px 圆点）只出现在两项之间，开头不该有；它是纯装饰，读屏时不该被念出来。
+    // 图标也带 aria-hidden，所以这里只数元数据行的直接子元素。
+    const children = [...meta.children]
+    const separators = children.filter((child) => child.getAttribute('aria-hidden') === 'true')
+    expect(children[0]?.getAttribute('aria-hidden')).not.toBe('true')
+    expect(separators.length).toBeGreaterThan(0)
+    expect(separators).toHaveLength(children.length - separators.length - 1)
+  })
+})
+
+describe('ActiveSession activity panel auto-close grace', () => {
+  const sessionId = 'activity-grace-session'
+
+  function seedActivitySession(overrides: Record<string, unknown> = {}) {
+    useSessionStore.setState({
+      sessions: [{
+        id: sessionId,
+        title: 'Activity Grace Session',
+        createdAt: '2026-08-02T00:00:00.000Z',
+        modifiedAt: '2026-08-02T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+      }],
+      activeSessionId: sessionId,
+      isLoading: false,
+      error: null,
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId, title: 'Activity Grace Session', type: 'session', status: 'idle' }],
+      activeTabId: sessionId,
+    })
+    useChatStore.setState({
+      sessions: {
+        [sessionId]: {
+          messages: [{ id: 'm1', type: 'assistant_text', content: 'ready', timestamp: 1 }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          historyStatus: 'ready',
+          historyError: null,
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          streamingResponseChars: 0,
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          backgroundAgentTasks: {
+            'agent-task-1': {
+              taskId: 'agent-task-1',
+              taskType: 'agent',
+              status: 'running',
+              startedAt: 1,
+              updatedAt: 1,
+            },
+          },
+          elapsedTimer: null,
+          ...overrides,
+        },
+      },
+    })
+  }
+
+  function patchSession(overrides: Record<string, unknown>) {
+    useChatStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        [sessionId]: { ...state.sessions[sessionId], ...overrides },
+      },
+    }) as never)
+  }
+
+  it('keeps the panel open through transient empty states and only closes after the grace period', () => {
+    vi.useFakeTimers()
+    seedActivitySession()
+    render(<ActiveSession />)
+    act(() => {
+      useActivityPanelStore.getState().open(sessionId)
+    })
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(true)
+
+    // History reload window: activity caches are briefly drained while loading.
+    act(() => {
+      patchSession({ backgroundAgentTasks: {}, messages: [], historyStatus: 'loading' })
+      vi.advanceTimersByTime(5000)
+    })
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(true)
+
+    // Empty but settled: still within the grace period. The debounce timer is
+    // scheduled when React flushes the effect at act exit, so patch and
+    // advance in separate acts to keep the timeline honest.
+    act(() => {
+      patchSession({ historyStatus: 'ready' })
+    })
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(true)
+
+    // The empty state outlives the grace period: genuinely no activity left.
+    act(() => {
+      vi.advanceTimersByTime(1500)
+    })
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(false)
+  })
+
+  it('cancels the pending close when activity reappears inside the grace period', () => {
+    vi.useFakeTimers()
+    seedActivitySession()
+    render(<ActiveSession />)
+    act(() => {
+      useActivityPanelStore.getState().open(sessionId)
+    })
+
+    act(() => {
+      patchSession({ backgroundAgentTasks: {}, messages: [], historyStatus: 'ready' })
+    })
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+    act(() => {
+      patchSession({
+        messages: [{ id: 'm2', type: 'assistant_text', content: 'back', timestamp: 2 }],
+        backgroundAgentTasks: {
+          'agent-task-1': {
+            taskId: 'agent-task-1',
+            taskType: 'agent',
+            status: 'running',
+            startedAt: 1,
+            updatedAt: 1,
+          },
+        },
+      })
+    })
+    act(() => {
+      vi.advanceTimersByTime(5000)
+    })
+
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(true)
+  })
+})
+
+describe('ActiveSession delegated sessions', () => {
+  const sessionId = 'delegating-session'
+  const delegation: SessionDelegationSnapshot = {
+    batches: [{ id: 'batch', requestId: 'r', callerSessionId: sessionId, revision: 1, state: 'launched', sessions: [
+      { id: 'sec', title: 'Security review', prompt: 'Review security', runtime: { providerId: 'p', modelId: 'm' }, sessionId: 'child-sec', launched: true },
+    ] }],
+    models: [{ providerId: 'p', providerName: 'Provider', modelId: 'm', modelName: 'Model', supportedEfforts: [], isDefault: true }],
+    sessions: [{ sessionId: 'child-sec', runtime: { providerId: 'p', modelId: 'm' }, state: 'running', paused: false }],
+    changes: [],
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    useSessionDelegationStore.setState({ bySession: {} })
+  })
+
+  // On a phone the activity sheet is stacked above dialogs, so the model
+  // dialog opened from it rendered underneath, behind the sheet's scrim.
+  it.each([
+    { phone: true, panelStaysOpen: false },
+    { phone: false, panelStaysOpen: true },
+  ])('opens the model dialog from the activity panel above it (phone: $phone)', async ({ phone, panelStaysOpen }) => {
+    viewportMocks.isMobile = phone
+    vi.spyOn(sessionCollaborationApi, 'get').mockResolvedValue(delegation)
+    useSettingsStore.setState({ locale: 'en' })
+    useTabStore.setState({ activeTabId: sessionId, tabs: [{ sessionId, title: 'Main', type: 'session', status: 'idle' }] })
+    useSessionStore.setState({ sessions: [{ id: sessionId, title: 'Main', messageCount: 1, createdAt: '', modifiedAt: '', projectPath: '/repo', workDir: '/repo', workDirExists: true }] })
+    useChatStore.setState({ sessions: { [sessionId]: { ...createDefaultSessionState(), connectionState: 'connected', historyStatus: 'ready', historyHydrated: true, messages: [{ id: 'm', type: 'assistant_text', content: 'delegated', timestamp: 1 }] } } })
+
+    render(<ActiveSession />)
+    await waitFor(() => expect(useSessionDelegationStore.getState().bySession[sessionId]?.rows).toHaveLength(1))
+    act(() => useActivityPanelStore.getState().open(sessionId))
+    const panel = await screen.findByTestId(phone ? 'session-activity-sheet' : 'session-activity-panel')
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Change models' }))
+    expect(await screen.findByRole('dialog', { name: 'Session assignments' })).toBeInTheDocument()
+    expect(useActivityPanelStore.getState().isOpen(sessionId)).toBe(panelStaysOpen)
+  })
+})

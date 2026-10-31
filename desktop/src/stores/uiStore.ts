@@ -1,0 +1,491 @@
+import { create } from 'zustand'
+import {
+  isDarkTheme,
+  type DarkThemeMode,
+  type LightThemeMode,
+  type ThemeMode,
+} from '../types/settings'
+import {
+  DARK_THEME_STORAGE_KEY,
+  FOLLOW_SYSTEM_THEME_STORAGE_KEY,
+  LIGHT_THEME_STORAGE_KEY,
+  THEME_BACKGROUNDS,
+  THEME_STORAGE_KEY,
+  getSystemAppearance,
+  normalizeThemeMode,
+  readStoredDarkTheme,
+  readStoredFollowSystemTheme,
+  readStoredLightTheme,
+  readStoredTheme,
+  resolveAppliedTheme,
+  subscribeSystemAppearance,
+  subscribeThemeStorageChanges,
+} from '../theme/systemAppearance'
+import { applyAccent, persistAccent, readStoredAccent } from '../theme/accent'
+
+const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'cc-haha-active-settings-tab'
+const SIDEBAR_WIDTH_STORAGE_KEY = 'cc-haha-sidebar-width'
+
+export const SIDEBAR_MIN_WIDTH = 240
+export const SIDEBAR_MAX_WIDTH = 480
+export const SIDEBAR_DEFAULT_WIDTH = 280
+
+export function clampSidebarWidth(width: number): number {
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)))
+}
+
+function getStoredSidebarWidth(): number {
+  try {
+    const stored = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+    if (Number.isFinite(stored) && stored > 0) return clampSidebarWidth(stored)
+  } catch { /* localStorage unavailable */ }
+  return SIDEBAR_DEFAULT_WIDTH
+}
+
+const SETTINGS_TABS = [
+  'providers',
+  'activity',
+  'general',
+  'voice',
+  'h5Access',
+  'adapters',
+  'terminal',
+  'mcp',
+  'agents',
+  'skills',
+  'memory',
+  'plugins',
+  'pets',
+  'computerUse',
+  'diagnostics',
+  'about',
+] as const
+
+function persist(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch { /* localStorage unavailable */ }
+}
+
+type ThemePreferences = {
+  theme: ThemeMode
+  lightTheme: LightThemeMode
+  darkTheme: DarkThemeMode
+  followSystem: boolean
+}
+
+/**
+ * Write every theme value together.
+ *
+ * The follow-the-system default is inferred from *not* having a stored theme,
+ * so any write that stores a theme has to store the flag alongside it —
+ * otherwise a fresh install silently drops back to a fixed theme the first
+ * time the theme is persisted for any reason.
+ */
+function persistThemeState({ theme, lightTheme, darkTheme, followSystem }: ThemePreferences): void {
+  persist(THEME_STORAGE_KEY, theme)
+  persist(LIGHT_THEME_STORAGE_KEY, lightTheme)
+  persist(DARK_THEME_STORAGE_KEY, darkTheme)
+  persist(FOLLOW_SYSTEM_THEME_STORAGE_KEY, followSystem ? '1' : '0')
+}
+
+/** The theme that should currently be on `<html>`, given the stored values. */
+function getInitialAppliedTheme(): ThemeMode {
+  return resolveAppliedTheme({
+    followSystem: readStoredFollowSystemTheme(),
+    theme: readStoredTheme(),
+    lightTheme: readStoredLightTheme(),
+    darkTheme: readStoredDarkTheme(),
+    systemAppearance: getSystemAppearance(),
+  })
+}
+
+function isSettingsTab(value: unknown): value is SettingsTab {
+  return typeof value === 'string' && (SETTINGS_TABS as readonly string[]).includes(value)
+}
+
+function getStoredSettingsTab(): SettingsTab {
+  try {
+    const stored = localStorage.getItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY)
+    if (isSettingsTab(stored)) return stored
+    // The retired Trace entry; its capture toggle now lives under General.
+    // persistenceMigrations rewrites it at startup — this is the second guard.
+    if (stored === 'trace') return 'general'
+  } catch { /* localStorage unavailable */ }
+  return 'providers'
+}
+
+/**
+ * Repaint the document for `theme`. Shared with the cross-window storage sync
+ * below so a palette change made in another window lands identically here —
+ * the `theme-color` meta in particular, which colors the iOS status bar and
+ * the Android address bar and would otherwise stay on the palette this window
+ * booted with.
+ */
+function paintDocumentTheme(theme: ThemeMode) {
+  document.documentElement.setAttribute('data-theme', theme)
+  // Two of the six palettes sit on a dark ground, so this cannot test for the
+  // literal 'dark' key — ink-blue would render native scrollbars and form
+  // controls in their light variant against a near-black page.
+  document.documentElement.style.colorScheme = isDarkTheme(theme) ? 'dark' : 'light'
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_BACKGROUNDS[theme])
+  // The picked theme color is derived per ground, so it is repainted with it.
+  applyAccent(document.documentElement, readStoredAccent(), theme)
+}
+
+export function applyTheme(
+  theme: ThemeMode,
+  followSystem = readStoredFollowSystemTheme(),
+  lightTheme = readStoredLightTheme(),
+) {
+  if (typeof document === 'undefined') return
+  paintDocumentTheme(theme)
+  notifyHostAppearance(theme, followSystem, lightTheme)
+}
+
+/**
+ * Tell the Electron main process which theme ended up applied, so the native
+ * window background matches it on the next launch. Best effort: the browser
+ * host and the Tauri shell have no such channel and simply no-op.
+ *
+ * `lightBackground` travels along because a cache written at night would
+ * otherwise have no way to know which light theme to repaint in the morning.
+ */
+function notifyHostAppearance(theme: ThemeMode, followSystem: boolean, lightTheme: LightThemeMode) {
+  void import('../lib/desktopHost')
+    .then(({ desktopHost }) => desktopHost.appearance.setApplied({
+      isDark: isDarkTheme(theme),
+      background: THEME_BACKGROUNDS[theme],
+      lightBackground: THEME_BACKGROUNDS[lightTheme],
+      followSystem,
+    }))
+    .catch(() => { /* host channel unavailable */ })
+}
+
+let stopSystemAppearanceWatch: (() => void) | null = null
+let stopStorageSync: (() => void) | null = null
+
+export function initializeTheme() {
+  const state = useUIStore.getState()
+  applyTheme(state.theme, state.followSystemTheme, state.lightTheme)
+  // Pin down the inferred default so it survives the next launch.
+  persistThemeState({
+    theme: state.theme,
+    lightTheme: state.lightTheme,
+    darkTheme: state.darkTheme,
+    followSystem: state.followSystemTheme,
+  })
+
+  stopSystemAppearanceWatch?.()
+  stopSystemAppearanceWatch = subscribeSystemAppearance((appearance) => {
+    // Read the preference from storage rather than this window's store. The
+    // pet window runs the same bootstrap with its own store instance over one
+    // shared localStorage, so after the main window changes the setting its
+    // in-memory copy is stale — and acting on it here would
+    // write the user's choice straight back out.
+    if (!readStoredFollowSystemTheme()) return
+    const lightTheme = readStoredLightTheme()
+    const darkTheme = readStoredDarkTheme()
+    const current = useUIStore.getState()
+    const next = resolveAppliedTheme({
+      followSystem: true,
+      theme: current.theme,
+      lightTheme,
+      darkTheme,
+      systemAppearance: appearance,
+    })
+    if (next === current.theme) return
+    applyTheme(next, true, lightTheme)
+    persistThemeState({ theme: next, lightTheme, darkTheme, followSystem: true })
+    useUIStore.setState({ theme: next, lightTheme, darkTheme, followSystemTheme: true })
+  })
+
+  stopStorageSync?.()
+  stopStorageSync = subscribeThemeStorageChanges(() => {
+    // Another window changed the appearance. Catch this window's store up so
+    // its next decision is made on current values, and repaint it.
+    const followSystemTheme = readStoredFollowSystemTheme()
+    const lightTheme = readStoredLightTheme()
+    const darkTheme = readStoredDarkTheme()
+    const theme = resolveAppliedTheme({
+      followSystem: followSystemTheme,
+      theme: readStoredTheme(),
+      lightTheme,
+      darkTheme,
+      systemAppearance: getSystemAppearance(),
+    })
+    useUIStore.setState({ theme, lightTheme, darkTheme, followSystemTheme, accent: readStoredAccent() })
+    if (typeof document !== 'undefined') paintDocumentTheme(theme)
+  })
+}
+
+/** Test seam: drop the listeners installed by initializeTheme. */
+export function teardownTheme() {
+  stopSystemAppearanceWatch?.()
+  stopSystemAppearanceWatch = null
+  stopStorageSync?.()
+  stopStorageSync = null
+}
+
+export type Toast = {
+  id: string
+  type: 'success' | 'error' | 'warning' | 'info'
+  message: string
+  duration?: number
+}
+
+export type MarketTarget = {
+  section: 'plugins' | 'skills'
+  /** Open this connector's detail once the catalog loads. */
+  connectorId?: string
+}
+
+export type SettingsTab =
+  | 'providers'
+  | 'activity'
+  | 'general'
+  | 'voice'
+  | 'h5Access'
+  | 'adapters'
+  | 'terminal'
+  | 'mcp'
+  | 'agents'
+  | 'skills'
+  | 'memory'
+  | 'plugins'
+  | 'pets'
+  | 'computerUse'
+  | 'diagnostics'
+  | 'about'
+
+type ActiveView = 'code' | 'scheduled' | 'terminal' | 'history' | 'settings'
+
+/** The desktop's retained new-session composer. Memory only, never persisted. */
+export type NewSessionDraft = {
+  workDir: string
+  /** Identifies one composer mount; a new draft gets a new one. */
+  revision: number
+  /**
+   * Unsent text or attachments, as reported by the composer. Only an empty
+   * draft may be moved to the project a "New session" entry asks for; picking
+   * a project, model or mode alone is not content.
+   */
+  hasContent: boolean
+}
+
+/** A workspace action the draft composer should perform after it assigns a session. */
+export type DraftWorkspaceAction = 'toggle-side' | 'toggle-bottom' | 'toggle-fullscreen'
+
+export type DraftWorkspaceRequest = {
+  action: DraftWorkspaceAction
+  /** Only the draft revision that asked for it may consume the request. */
+  revision: number
+  nonce: number
+  originatingTabId: string | null
+  originatingView: ActiveView
+}
+
+type UIStore = {
+  /** The theme currently on `<html>` — resolved, not necessarily the manual pick. */
+  theme: ThemeMode
+  /** Whether `theme` tracks the OS dark/light setting. */
+  followSystemTheme: boolean
+  /** Which paper palette the light half of "follow the system" resolves to. */
+  lightTheme: LightThemeMode
+  /** Which ink palette the dark half of "follow the system" resolves to. */
+  darkTheme: DarkThemeMode
+  sidebarOpen: boolean
+  /** Expanded-state sidebar width in px, user-resizable within the clamp range. */
+  sidebarWidth: number
+  activeView: ActiveView
+  activeSettingsTab: SettingsTab
+  pendingSettingsTab: SettingsTab | null
+  pendingMemoryPath: string | null
+  /** Where the extension market should open next (set by the composer + menu). */
+  pendingMarketTarget: MarketTarget | null
+  /**
+   * Bumped by Cmd+N. The sidebar's "New session" item answers it, so the
+   * shortcut it advertises does exactly what clicking it does.
+   */
+  newSessionRequest: number
+  /** Ephemeral composer seed. No server session exists until the first send. */
+  newSessionDraft: NewSessionDraft | null
+  /** Set when a workspace control is used before the draft owns a session. */
+  draftWorkspaceRequest: DraftWorkspaceRequest | null
+  activeModal: string | null
+  toasts: Toast[]
+
+  setTheme: (theme: ThemeMode) => void
+  setFollowSystemTheme: (follow: boolean) => void
+  toggleTheme: () => void
+  /** 主题色: `mono` (black and white, the default) or a `#RRGGBB` color. */
+  accent: string
+  setAccent: (accent: string) => void
+  toggleSidebar: () => void
+  setSidebarOpen: (open: boolean) => void
+  setSidebarWidth: (width: number) => void
+  setActiveView: (view: ActiveView) => void
+  setActiveSettingsTab: (tab: SettingsTab) => void
+  setPendingSettingsTab: (tab: SettingsTab | null) => void
+  setPendingMemoryPath: (path: string | null) => void
+  setPendingMarketTarget: (target: MarketTarget | null) => void
+  requestNewSession: () => void
+  /**
+   * Opens the retained draft for `workDir`. An empty draft moves there; one
+   * with unsent content keeps its project. No `workDir` keeps the draft as is.
+   */
+  startNewSessionDraft: (workDir?: string) => void
+  /** The composer of draft `revision` reports whether it holds unsent content. */
+  setNewSessionDraftContent: (revision: number, hasContent: boolean) => void
+  requestDraftWorkspace: (action: DraftWorkspaceAction, originatingTabId?: string | null, originatingView?: ActiveView) => void
+  clearDraftWorkspaceRequest: (nonce: number) => void
+  openModal: (id: string) => void
+  closeModal: () => void
+  addToast: (toast: Omit<Toast, 'id'>) => void
+  removeToast: (id: string) => void
+}
+
+let toastCounter = 0
+let newSessionDraftRevision = 0
+let draftWorkspaceRequestNonce = 0
+
+export const useUIStore = create<UIStore>((set) => ({
+  theme: getInitialAppliedTheme(),
+  followSystemTheme: readStoredFollowSystemTheme(),
+  lightTheme: readStoredLightTheme(),
+  darkTheme: readStoredDarkTheme(),
+  sidebarOpen: true,
+  sidebarWidth: getStoredSidebarWidth(),
+  activeView: 'code',
+  activeSettingsTab: getStoredSettingsTab(),
+  pendingSettingsTab: null,
+  pendingMemoryPath: null,
+  pendingMarketTarget: null,
+  newSessionRequest: 0,
+  newSessionDraft: null,
+  draftWorkspaceRequest: null,
+  activeModal: null,
+  toasts: [],
+
+  // STAR has one light and one dark palette. Picking one is an explicit
+  // choice: it applies at once and releases the follow-the-system switch,
+  // otherwise a click on 浅色 under a dark OS would change nothing on screen.
+  setTheme: (theme) => {
+    set((state) => {
+      const applied = normalizeThemeMode(theme)
+      applyTheme(applied, false, state.lightTheme)
+      persistThemeState({ theme: applied, lightTheme: state.lightTheme, darkTheme: state.darkTheme, followSystem: false })
+      return { theme: applied, followSystemTheme: false }
+    })
+  },
+
+  // Turning the switch off freezes whatever is on screen rather than snapping
+  // back to an older manual pick.
+  setFollowSystemTheme: (follow) => {
+    set((state) => {
+      const applied = resolveAppliedTheme({
+        followSystem: follow,
+        theme: state.theme,
+        lightTheme: state.lightTheme,
+        darkTheme: state.darkTheme,
+        systemAppearance: getSystemAppearance(),
+      })
+      applyTheme(applied, follow, state.lightTheme)
+      persistThemeState({
+        theme: applied,
+        lightTheme: state.lightTheme,
+        darkTheme: state.darkTheme,
+        followSystem: follow,
+      })
+      return { followSystemTheme: follow, theme: applied }
+    })
+  },
+
+  // Cycling through the palettes by hand is an explicit takeover, so it also
+  // releases the OS switch.
+  toggleTheme: () => {
+    set((state) => {
+      const next = normalizeThemeMode(state.theme) === 'dark' ? 'white' : 'dark'
+      applyTheme(next, false, state.lightTheme)
+      persistThemeState({ theme: next, lightTheme: state.lightTheme, darkTheme: state.darkTheme, followSystem: false })
+      return { theme: next, followSystemTheme: false }
+    })
+  },
+
+  accent: readStoredAccent(),
+  setAccent: (accent) => {
+    persistAccent(accent)
+    const stored = readStoredAccent()
+    set((state) => {
+      if (typeof document !== 'undefined') applyAccent(document.documentElement, stored, state.theme)
+      return { accent: stored }
+    })
+  },
+
+  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  setSidebarWidth: (width) => {
+    const clamped = clampSidebarWidth(width)
+    persist(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped))
+    set({ sidebarWidth: clamped })
+  },
+  setActiveView: (view) => set({ activeView: view }),
+  setActiveSettingsTab: (tab) => {
+    try { localStorage.setItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY, tab) } catch { /* noop */ }
+    set({ activeSettingsTab: tab })
+  },
+  setPendingSettingsTab: (tab) => set({ pendingSettingsTab: tab }),
+  setPendingMemoryPath: (path) => set({ pendingMemoryPath: path }),
+  setPendingMarketTarget: (target) => set({ pendingMarketTarget: target }),
+  startNewSessionDraft: (workDir) => set(state => {
+    const draft = state.newSessionDraft
+    if (!draft) {
+      return {
+        activeView: 'code',
+        newSessionDraft: { workDir: workDir ?? '', revision: ++newSessionDraftRevision, hasContent: false },
+        draftWorkspaceRequest: null,
+      }
+    }
+    // New-chat navigation returns to the retained composer and never replaces
+    // its revision: that would unmount it and silently discard unsent input,
+    // attachments and the mode picked in it. An empty one is moved in place;
+    // unsent content keeps the project it was written for.
+    if (workDir === undefined || draft.hasContent || draft.workDir === workDir) return { activeView: 'code' }
+    return { activeView: 'code', newSessionDraft: { ...draft, workDir } }
+  }),
+  setNewSessionDraftContent: (revision, hasContent) => set(state => (
+    state.newSessionDraft?.revision === revision && state.newSessionDraft.hasContent !== hasContent
+      ? { newSessionDraft: { ...state.newSessionDraft, hasContent } }
+      : state
+  )),
+  requestDraftWorkspace: (action, originatingTabId = null, originatingView = 'code') => set(state => state.newSessionDraft
+    ? {
+        draftWorkspaceRequest: {
+          action,
+          revision: state.newSessionDraft.revision,
+          nonce: ++draftWorkspaceRequestNonce,
+          originatingTabId,
+          originatingView,
+        },
+      }
+    : state),
+  clearDraftWorkspaceRequest: (nonce) => set(state =>
+    state.draftWorkspaceRequest?.nonce === nonce ? { draftWorkspaceRequest: null } : state),
+  requestNewSession: () => set((state) => ({ newSessionRequest: state.newSessionRequest + 1 })),
+  openModal: (id) => set({ activeModal: id }),
+  closeModal: () => set({ activeModal: null }),
+
+  addToast: (toast) => {
+    const id = `toast-${++toastCounter}`
+    set((s) => ({ toasts: [...s.toasts, { ...toast, id }] }))
+    // Auto-remove after duration
+    const duration = toast.duration ?? 4000
+    if (duration > 0) {
+      setTimeout(() => {
+        set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }))
+      }, duration)
+    }
+  },
+
+  removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+}))
