@@ -59,6 +59,8 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     name: Build (${{ matrix.label }})
+    # A stuck step otherwise holds a (billed) runner for the 6-hour default.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -124,6 +126,54 @@ jobs:
         env:
           SIDECAR_TARGET_TRIPLE: ${{ matrix.target_triple }}
         run: bun run prepare:ripgrep
+
+      # native/cu-helper/build.sh never signs the Computer Use helper ad hoc
+      # (that would drop the user's Accessibility and Screen Recording grants
+      # on every update) and an unsigned development build has no Apple
+      # certificate. Its fallback for that case is a self-signed Code Signing
+      # identity named "cu-helper-dev"; this creates one for the job in a
+      # temporary keychain. Only the helper uses it: the sidecar stays ad hoc
+      # and the app unsigned (desktop/scripts/sign-identity.ts only looks for
+      # Apple certificates), so Computer Use is unavailable in these builds,
+      # as in any unsigned build.
+      - name: Create a temporary signing identity for the Computer Use helper
+        if: matrix.smoke_platform == 'macos'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/cu-helper-dev"
+          mkdir -p "$work"
+          keychain="$work/cu-helper-dev.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          p12_password="$(openssl rand -hex 24)"
+          cat > "$work/cert.cnf" <<'EOF'
+          [req]
+          distinguished_name = dn
+          x509_extensions = ext
+          prompt = no
+          [dn]
+          CN = cu-helper-dev
+          [ext]
+          keyUsage = critical, digitalSignature
+          extendedKeyUsage = critical, codeSigning
+          EOF
+          # The system LibreSSL writes a PKCS#12 file that `security import` reads.
+          /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 7 -config "$work/cert.cnf" \
+            -keyout "$work/key.pem" -out "$work/cert.pem"
+          /usr/bin/openssl pkcs12 -export -inkey "$work/key.pem" -in "$work/cert.pem" \
+            -name cu-helper-dev -out "$work/identity.p12" -passout "pass:$p12_password"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$work/identity.p12" -k "$keychain" -P "$p12_password" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$work/key.pem" "$work/identity.p12"
+          # Trusted for code signing, the identity counts as valid, which is
+          # what build.sh looks for.
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$work/cert.pem"
+          security find-identity -v -p codesigning | grep -F '"cu-helper-dev"'
 
       - name: Build sidecars
         working-directory: desktop
@@ -208,7 +258,8 @@ jobs:
         working-directory: desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: node ./node_modules/electron-builder/out/cli/cli.js ${{ matrix.builder_args }} --publish never -c.mac.notarize=false
+        # Quoted: unquoted, PowerShell splits the argument at the first dot.
+        run: node ./node_modules/electron-builder/out/cli/cli.js ${{ matrix.builder_args }} --publish never '-c.mac.notarize=false'
 
       - name: Verify Windows installer execution
         if: matrix.smoke_platform == 'windows' && matrix.arch == 'x64'
