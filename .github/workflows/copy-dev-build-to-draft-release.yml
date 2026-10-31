@@ -1,0 +1,43 @@
+name: Copy Dev Build To Draft Release
+
+# Actions artifacts download slowly from some networks, while release assets
+# come from GitHub's download CDN. This copies the installers of one
+# "Build Desktop (Dev)" run into a draft release. A draft creates no git tag,
+# is visible only to people with write access to the repository, and can be
+# deleted once the installers are downloaded.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'ID of the Build Desktop (Dev) run to copy'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Copy the run's installers to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          case "$RUN_ID" in
+            ''|*[!0-9]*) echo "::error::run_id must be a workflow run number"; exit 1 ;;
+          esac
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --dir artifacts
+          mkdir -p upload
+          find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.AppImage' -o -name 'install-macos-unsigned.sh' \) \
+            -exec cp -f {} upload/ \;
+          (cd upload && sha256sum -- * > SHA256SUMS.txt)
+          ls -l upload
+          sha="$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)"
+          gh release create "dev-build-$RUN_ID" upload/* --repo "$GITHUB_REPOSITORY" --draft \
+            --title "Dev build $RUN_ID" \
+            --notes "Unsigned installers from Build Desktop (Dev) run $RUN_ID, commit $sha."
