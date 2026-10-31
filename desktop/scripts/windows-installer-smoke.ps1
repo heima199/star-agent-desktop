@@ -35,7 +35,15 @@ if ($installers.Count -ne 1) {
 }
 $installer = $installers[0].FullName
 
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) "cc-haha-installer-smoke-$([Guid]::NewGuid().ToString('N'))"
+# The installer moves the unpacked app into place with the shell's file copy
+# (CopyFiles in electron-builder's extractAppPackage.nsh), which stops at
+# MAX_PATH (260 characters), and the bundled STAR Code IDE puts its deepest
+# file 164 characters below the install directory. Under the runner's temp
+# folder the install directory was about 118 characters long, and the fresh
+# install hung once and crashed once. The test root stays about as short as a
+# real install directory (the per-user default is 57 characters).
+$testBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
+$testRoot = Join-Path $testBase "smoke-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 $installDir = Join-Path $testRoot '中文 安装目录\STAR Agent'
 $appData = Join-Path $testRoot 'AppData\Roaming'
 $localAppData = Join-Path $testRoot 'AppData\Local'

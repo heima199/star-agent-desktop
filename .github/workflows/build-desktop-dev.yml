@@ -270,6 +270,21 @@ jobs:
         working-directory: desktop
         run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-installer-smoke.ps1 -ArtifactsDir ./build-artifacts/electron -Arch x64 -InstallTimeoutSeconds 900
 
+      # Evidence for a failed installer smoke: Windows Error Reporting names the
+      # faulting module of a crashed installer, and an installer that never
+      # finished leaves its NSIS plug-in folder (with the unpacked app) in TEMP.
+      - name: Diagnose a failed Windows installer smoke
+        if: failure() && matrix.smoke_platform == 'windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000, 1001, 1002; StartTime = (Get-Date).AddHours(-2) } -ErrorAction SilentlyContinue |
+            Select-Object -First 10 | ForEach-Object { '--- event {0} at {1}' -f $_.Id, $_.TimeCreated; $_.Message }
+          Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'ns*.tmp' -ErrorAction SilentlyContinue | ForEach-Object {
+            $files = @(Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue)
+            $longest = ($files | ForEach-Object { $_.FullName.Length } | Measure-Object -Maximum).Maximum
+            '{0}: {1} files, longest path {2} characters' -f $_.FullName, $files.Count, $longest
+          }
+
       - name: Verify packaged app structure
         run: bun run test:package-smoke --platform ${{ matrix.smoke_platform }} --arch ${{ matrix.arch }} --package-kind release --artifacts-dir desktop/build-artifacts/electron ${{ matrix.smoke_platform == 'linux' && '--max-linux-glibc 2.28' || '' }}
 
