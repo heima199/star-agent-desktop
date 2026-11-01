@@ -14,6 +14,7 @@ import { StarStudioPage } from '../../pages/star/StarStudioPage'
 import { StarLibraryPage } from '../../pages/star/StarLibraryPage'
 import { StarPhonePage } from '../../pages/star/StarPhonePage'
 import { StarPageHost } from '../../pages/star/StarPageHost'
+import { StarWebPage } from '../../pages/star/web/StarWebPage'
 
 type ContentRouterProps = {
   /**
@@ -29,6 +30,12 @@ export function ContentRouter({ homePage }: ContentRouterProps = {}) {
   const tabs = useTabStore((s) => s.tabs)
   const activeTabType = tabs.find((t) => t.sessionId === activeTabId)?.type
   const terminalTabs = tabs.filter((tab) => tab.type === 'terminal')
+  // Web pages stay mounted for the life of their tab: a `<webview>` that leaves
+  // the DOM ends its page and one that is moved reloads it. Ordered by tab id,
+  // not by the tab strip, so reordering tabs never moves an element.
+  const webTabs = tabs
+    .filter((tab) => tab.type === 'star-web')
+    .sort((left, right) => (left.sessionId < right.sessionId ? -1 : left.sessionId > right.sessionId ? 1 : 0))
   const activeSessionId = activeTabType === 'session' ? activeTabId : null
   const [lastSessionId, setLastSessionId] = useState<string | null>(activeSessionId)
   const retainedSessionId = activeSessionId ?? (
@@ -117,7 +124,7 @@ export function ContentRouter({ homePage }: ContentRouterProps = {}) {
     page = teamTab?.teamLeadSessionId
       ? <AgentTeamsWorkbenchTab tabId={activeTabId} leadSessionId={teamTab.teamLeadSessionId} />
       : <EmptySession />
-  } else if (activeTabType !== 'terminal' && activeTabType !== 'session') {
+  } else if (activeTabType !== 'terminal' && activeTabType !== 'session' && activeTabType !== 'star-web') {
     page = <EmptySession />
   }
 
@@ -178,6 +185,13 @@ export function ContentRouter({ homePage }: ContentRouterProps = {}) {
           </div>
         )
       })}
+      {webTabs.map((tab) => (
+        <StarWebPage
+          key={tab.sessionId}
+          tab={tab}
+          active={activeTabType === 'star-web' && tab.sessionId === activeTabId}
+        />
+      ))}
     </div>
   )
 }

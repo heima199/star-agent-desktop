@@ -81,7 +81,7 @@ describe('Electron preview security boundary', () => {
     // where the local token is injected.
     expect(workspaceBrowserServiceSource).toContain('WORKSPACE_BROWSER_PARTITION')
     expect(workspaceBrowserServiceSource).not.toContain('defaultSession')
-    expect(workspaceBrowserServiceSource).toContain('configurePreviewSessionPermissions')
+    expect(workspaceBrowserServiceSource).toContain('configureBrowserSessionPermissions(browserSession)')
   })
 
   it('locks workspace browser sandboxing on', () => {
@@ -139,7 +139,7 @@ describe('Electron preview security boundary', () => {
     // where the local token is injected.
     expect(workspaceBrowserServiceSource).toContain('WORKSPACE_BROWSER_PARTITION')
     expect(workspaceBrowserServiceSource).not.toContain('defaultSession')
-    expect(workspaceBrowserServiceSource).toContain('configurePreviewSessionPermissions')
+    expect(workspaceBrowserServiceSource).toContain('configureBrowserSessionPermissions(browserSession)')
   })
 
   it('locks workspace browser sandboxing on', () => {

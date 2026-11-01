@@ -21,6 +21,8 @@ export const SETTINGS_TAB_ID = '__settings__'
 export { STAR_OPEN_SETTINGS_EVENT }
 /** Tab id prefix of the STAR pages (plugins, PPT, 3D, projects, ...). */
 export const STAR_PAGE_TAB_PREFIX = '__star_page__'
+/** Tab id prefix of the STAR web pages: sites opened inside the app (sidebar 推荐). */
+export const STAR_WEB_TAB_PREFIX = '__star_web__'
 export const SCHEDULED_TAB_ID = '__scheduled__'
 export const CONNECTORS_TAB_ID = '__connectors__'
 export const MARKET_TAB_ID = '__market__'
@@ -32,7 +34,7 @@ export const TEAM_MEMBER_TAB_PREFIX = 'team-member:'
 
 export type TabType = 'session' | 'settings' | 'scheduled' | 'connectors' | 'market' | 'terminal' | 'workbench' | 'subagent' | 'team' | 'team-member'
   // STAR pages (创作 / 资料库 / 手机助手). Memory only: never written to tab storage.
-  | 'star-studio' | 'star-library' | 'star-phone' | 'star-page'
+  | 'star-studio' | 'star-library' | 'star-phone' | 'star-page' | 'star-web'
 type PersistentSpecialTabType = 'settings' | 'scheduled' | 'connectors' | 'market'
 
 // Retired tab shapes that older builds persisted. `persistenceMigrations`
@@ -59,6 +61,10 @@ export type Tab = {
   returnTabId?: string
   /** STAR page id of a 'star-page' tab. */
   pageId?: string
+  /** Address a 'star-web' tab starts from; its page navigates on its own after that. */
+  webUrl?: string
+  /** A 'star-web' tab opened without a name takes its page's title. */
+  webFollowsTitle?: boolean
 }
 
 type PersistedTab = {
@@ -86,6 +92,11 @@ type TabStore = {
   closedSessionTabs: ClosedSessionTab[]
 
   openTab: (sessionId: string, title: string, type?: TabType) => void
+  /**
+   * Opens (or focuses, without navigating) a 'star-web' tab that starts at `url`.
+   * `background` adds it without taking the focus off the current tab.
+   */
+  openWebTab: (tabId: string, title: string, url: string, options?: { followTitle?: boolean; background?: boolean }) => void
   openTerminalTab: (cwd?: string, terminalRuntimeId?: string) => string
   openSubagentTab: (
     sourceSessionId: string,
@@ -208,6 +219,28 @@ export const useTabStore = create<TabStore>((set, get) => ({
           ...(sessionId.startsWith(STAR_PAGE_TAB_PREFIX) ? { pageId: sessionId.slice(STAR_PAGE_TAB_PREFIX.length) } : {}),
         }],
         activeTabId: sessionId,
+      })
+    }
+    get().saveTabs()
+  },
+
+  openWebTab: (tabId, title, url, options) => {
+    const { tabs, activeTabId } = get()
+    const nextActiveTabId = options?.background ? activeTabId : tabId
+    // An open page keeps where the user has taken it: asking again only focuses it.
+    if (tabs.some((tab) => tab.sessionId === tabId)) {
+      set({ activeTabId: nextActiveTabId })
+    } else {
+      set({
+        tabs: [...tabs, {
+          sessionId: tabId,
+          title,
+          type: 'star-web',
+          status: 'idle',
+          webUrl: url,
+          ...(options?.followTitle ? { webFollowsTitle: true } : {}),
+        }],
+        activeTabId: nextActiveTabId,
       })
     }
     get().saveTabs()
@@ -451,6 +484,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
       tab.type !== 'star-library' &&
       tab.type !== 'star-phone' &&
       tab.type !== 'star-page' &&
+      tab.type !== 'star-web' &&
       // Desktop settings are a modal, so a settings tab is never worth restoring there.
       !(tab.type === 'settings' && isDesktopRuntime())
     ))

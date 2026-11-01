@@ -54,6 +54,7 @@ import {
   resolveWorkspaceBrowserGuest,
 } from './services/workspaceBrowserGuest'
 import {
+  configureBrowserSessionPermissions,
   configureLocalServerRequestAuth,
   configurePreviewSessionPermissions,
   createPreviewSessionPartition,
@@ -517,14 +518,15 @@ function getWorkspaceBrowserService() {
  */
 function workspaceBrowserSession() {
   const browserSession = session.fromPartition(WORKSPACE_BROWSER_PARTITION)
-  // Same boundary as the singleton preview: OS permissions are denied, and
+  // Same boundary as the singleton preview: OS permissions are denied (a page
+  // may only write to the clipboard, for its copy buttons), and
   // `configureLocalServerRequestAuth` is deliberately NOT installed here.
   // These pages render arbitrary remote sites, so attaching the desktop's
   // local access token to their loopback requests would hand any visited
   // site the local API.
   if (!workspaceBrowserSessionConfigured) {
     workspaceBrowserSessionConfigured = true
-    configurePreviewSessionPermissions(browserSession)
+    configureBrowserSessionPermissions(browserSession)
   }
   return browserSession
 }

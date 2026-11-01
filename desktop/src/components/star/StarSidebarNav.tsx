@@ -25,7 +25,8 @@ import { MARKET_TAB_ID, SCHEDULED_TAB_ID, CONNECTORS_TAB_ID, useTabStore } from 
 import { useStarBrand } from '../../stores/starBrandStore'
 import { isStarTaskActive, useStarStore } from '../../stores/starStore'
 import { STAR_LIBRARY_TAB_ID, STAR_STUDIO_TAB_ID, starStudioTabTitle } from './starTabs'
-import { closeHiddenStarPageTabs, openExternal, openStarPage, starPageTabId, type StarPageId } from './starPages'
+import { closeHiddenStarPageTabs, openStarPage, starPageTabId, type StarPageId } from './starPages'
+import { openStarWeb, starWebTabId } from './starWeb'
 
 type NavItemProps = {
   active: boolean
@@ -109,12 +110,18 @@ export function StarSidebarNav({ Item, collapsed, activeTabId, onNewSession, mod
   }
   const primary = MODE_ITEMS[mode].map(key => entries[key]!)
   const moreKeys = ['calendar', 'files', 'studio', 'inspiration', 'kb', 'distribution'].filter(key => !MODE_ITEMS[mode].includes(key))
-  const ads: Entry[] = (config?.ads.icons ?? []).map((ad, index) => ({
-    key: `ad-${index}`,
-    label: ad.name,
-    icon: AD_ICONS[ad.icon] ?? Blocks,
-    ...(/api/i.test(ad.name) ? page('api') : { run: () => openExternal(ad.url) }),
-  }))
+  // 推荐 entries open in a tab of the app, one per entry, instead of the system browser.
+  const ads: Entry[] = (config?.ads.icons ?? []).map((ad, index) => {
+    const tabId = starWebTabId(ad.name, ad.url)
+    return {
+      key: `ad-${index}`,
+      label: ad.name,
+      icon: AD_ICONS[ad.icon] ?? Blocks,
+      ...(/api/i.test(ad.name)
+        ? page('api')
+        : { tabId, run: () => openStarWeb(ad.url, { title: ad.name, tabId }) }),
+    }
+  })
 
   const render = (entry: Entry) => (
     <Item key={entry.key} active={Boolean(entry.tabId && (activeTabId === entry.tabId || (entry.tabId === MARKET_TAB_ID && activeTabId === CONNECTORS_TAB_ID)))} collapsed={collapsed} label={entry.label} onClick={entry.run}

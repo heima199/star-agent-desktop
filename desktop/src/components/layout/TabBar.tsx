@@ -35,7 +35,7 @@ import { MinimizeToPetButton } from './MinimizeToPetButton'
 import { OpenProjectMenu } from './OpenProjectMenu'
 import { IdeLaunchButton } from './IdeLaunchButton'
 import { StarShareButton } from '../star/share/StarShareButton'
-import { AppWindow, Bot, CalendarClock, ChevronLeft, ChevronRight, Link, Network, PanelLeft, PanelRight, Search, Settings, SquareTerminal, Store, X, type LucideIcon } from 'lucide-react'
+import { AppWindow, Bot, CalendarClock, ChevronLeft, ChevronRight, Globe, Link, Network, PanelLeft, PanelRight, Search, Settings, SquareTerminal, Store, X, type LucideIcon } from 'lucide-react'
 import { WorkspaceLayoutControls } from './WorkspaceLayoutControls'
 import { useWorkspaceHeaderHost } from './WorkspaceHeaderContext'
 import { ActionDialog } from '@/components/ui/ActionDialog'
@@ -100,6 +100,7 @@ const TAB_TYPE_ICON: Partial<Record<TabType, LucideIcon>> = {
   subagent: Bot,
   team: Network,
   'team-member': Bot,
+  'star-web': Globe,
 }
 const TAB_TYPE_ICON_FALLBACK: LucideIcon = AppWindow
 const desktopHost = getDesktopHost()

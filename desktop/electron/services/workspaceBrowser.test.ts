@@ -355,7 +355,7 @@ const mainWindowSource = mainSource.slice(
 describe('Electron workspace browser host wiring', () => {
   it('shares one persistent partition and denies OS permissions on it', () => {
     expect(workspaceBrowserHostSource).toContain('session.fromPartition(WORKSPACE_BROWSER_PARTITION)')
-    expect(workspaceBrowserHostSource).toContain('configurePreviewSessionPermissions(browserSession)')
+    expect(workspaceBrowserHostSource).toContain('configureBrowserSessionPermissions(browserSession)')
   })
 
   it('adopts only guests that pass the main-window attach policy', () => {

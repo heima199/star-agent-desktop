@@ -103,3 +103,21 @@ export function configurePreviewSessionPermissions(
     callback(false)
   })
 }
+
+/**
+ * What a page of the in-app browser (workspace browser, sidebar 推荐 tabs) may
+ * use: none of the OS permissions (camera, microphone, location,
+ * notifications, ...) and no clipboard reads. Writing to the clipboard is the
+ * one exception. Sites' copy buttons call `navigator.clipboard.writeText`,
+ * which Chrome allows without asking, and denying it leaves those buttons dead.
+ */
+const BROWSER_PAGE_PERMISSIONS: ReadonlySet<string> = new Set(['clipboard-sanitized-write'])
+
+export function configureBrowserSessionPermissions(
+  session: Pick<Session, 'setPermissionCheckHandler' | 'setPermissionRequestHandler'>,
+): void {
+  session.setPermissionCheckHandler((_webContents, permission) => BROWSER_PAGE_PERMISSIONS.has(permission))
+  session.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(BROWSER_PAGE_PERMISSIONS.has(permission))
+  })
+}
