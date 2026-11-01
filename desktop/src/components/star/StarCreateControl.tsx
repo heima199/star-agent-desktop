@@ -31,6 +31,7 @@ import {
   IMAGE_RATIOS,
   imageModelsFor,
   nearest,
+  referenceVideoAvailable,
   videoCost,
   videoModelsFor,
   type ImageMode,
@@ -82,6 +83,8 @@ function useOutsideClose(open: boolean, ref: React.RefObject<HTMLElement | null>
 /** The mode list: what can be made in this chat. */
 function ModeMenu({ current, onPick }: { current?: StarCreateMode; onPick: (mode: StarCreateMode) => void }) {
   const signedIn = useStarStore(s => s.status?.signedIn ?? false)
+  // 视频参考 is listed only while some model takes reference videos.
+  const videoReferenceOn = useStarStore(s => referenceVideoAvailable(s.catalog))
   const brand = useStarBrand()
   return (
     <div className={`${PANEL} w-[300px]`} role="menu" aria-label={`${brand.name} 创作`}>
@@ -99,7 +102,7 @@ function ModeMenu({ current, onPick }: { current?: StarCreateMode; onPick: (mode
         {SECTIONS.map(section => (
           <div key={section.kind} role="group" aria-label={section.title} className="py-0.5">
             <div className="px-2 pb-0.5 pt-1.5 text-[11px] font-medium text-[var(--color-text-tertiary)]">{section.title}</div>
-            {STAR_CREATE_MODES.filter(spec => spec.kind === section.kind).map(spec => {
+            {STAR_CREATE_MODES.filter(spec => spec.kind === section.kind && (videoReferenceOn || spec.mode !== 'video2video')).map(spec => {
               const Icon = STAR_CREATE_ICONS[spec.mode]
               const active = spec.mode === current
               return (

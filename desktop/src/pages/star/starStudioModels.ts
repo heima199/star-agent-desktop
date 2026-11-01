@@ -30,18 +30,24 @@ const MODE_ALIASES: Record<Exclude<VideoMode, 'video2video'>, string[]> = {
 const REFERENCE_VIDEO_MODES = ['reference_video', 'video', 'video2video', 'ref2video', 'multimodal']
 
 /**
- * Model families the console sends reference videos on to (its video
- * service: MiniMax H3, Seedance 2 through meai and Seedance 2 official). Their
- * catalog entry only says `reference`, which also means reference images: on
- * that word alone, models that drop the video (Veo) were offered here and
- * picked first as the cheapest, so the result ignored the reference.
+ * Only a model whose catalog entry names reference videos outright takes
+ * them. `reference` alone also means reference images, and no model is taken
+ * on its name any more: in production (2026-11-01) Seedance 2 through the
+ * router came back as plain text-to-video with the video dropped, and
+ * MiniMax H3 refused reference videos. So 视频参考 stays off until the console
+ * marks a model `reference_video`, and then comes back without a new build.
  */
-const REFERENCE_VIDEO_FAMILIES = [/^minimax-h3/i, /^sd-2(?:-|$)/i, /seedance-2/i]
-
 export function acceptsReferenceVideo(model: StarVideoModel): boolean {
-  if (model.modes?.some(item => REFERENCE_VIDEO_MODES.includes(item.toLowerCase()))) return true
-  return REFERENCE_VIDEO_FAMILIES.some(family => family.test(model.id))
+  return Boolean(model.modes?.some(item => REFERENCE_VIDEO_MODES.includes(item.toLowerCase())))
 }
+
+/** Whether any model of the catalog takes reference videos (视频参考 is offered only then). */
+export function referenceVideoAvailable(catalog: StarCatalog | null): boolean {
+  return (catalog?.video ?? []).some(acceptsReferenceVideo)
+}
+
+/** Shown where a reference video comes in while no model takes one. */
+export const REFERENCE_VIDEO_PAUSED = '参考视频生成暂未开放，可以截取视频里的一帧用图生视频'
 
 const PREFERRED_IMAGE = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gpt-image-2', 'gpt-image-2.5']
 

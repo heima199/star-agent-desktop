@@ -14,6 +14,8 @@ import {
   IMAGE_RATIOS,
   imageModelsFor,
   nearest,
+  REFERENCE_VIDEO_PAUSED,
+  referenceVideoAvailable,
   VIDEO_MODES,
   videoCost,
   videoModelsFor,
@@ -120,10 +122,18 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
     return () => window.removeEventListener('star:studio-prefill', apply)
   }, [catalog])
 
+  // 视频参考 is offered only while some model takes reference videos.
+  const videoReferenceOn = referenceVideoAvailable(catalog)
+  useEffect(() => {
+    if (!videoReferenceOn && videoMode === 'video2video') setVideoMode('text2video')
+  }, [videoReferenceOn, videoMode])
+
   useEffect(() => {
     if (!incoming) return
     const item: Ref = { id: `r${++refSeq}`, name: incoming.kind === 'image' ? '生成结果' : '生成视频', kind: incoming.kind, preview: incoming.kind === 'image' ? incoming.url : null, url: incoming.url, status: 'ready' }
-    if (incoming.kind === 'video') {
+    if (incoming.kind === 'video' && !videoReferenceOn) {
+      useUIStore.getState().addToast({ type: 'info', message: REFERENCE_VIDEO_PAUSED })
+    } else if (incoming.kind === 'video') {
       setKind('video')
       setVideoMode('video2video')
       setVideos(list => [...list, item].slice(0, 3))
@@ -227,7 +237,7 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
     }
   }
 
-  const modes = kind === 'image' ? IMAGE_MODES : VIDEO_MODES
+  const modes = kind === 'image' ? IMAGE_MODES : VIDEO_MODES.filter(item => videoReferenceOn || item.value !== 'video2video')
   const activeMode = kind === 'image' ? imageMode : videoMode
   const modeHint = modes.find(item => item.value === activeMode)?.hint
   const modelList = kind === 'image' ? imageModels : videoModels

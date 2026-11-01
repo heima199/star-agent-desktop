@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { StarCatalog, StarVideoModel } from '../../api/star'
-import { acceptsReferenceVideo, autoVideoModel, videoModelsFor } from './starStudioModels'
+import { acceptsReferenceVideo, autoVideoModel, referenceVideoAvailable, videoModelsFor } from './starStudioModels'
 
 /** The video models of the production catalog (2026-11-01), as the desktop config lists them. */
 const VIDEO: StarVideoModel[] = [
@@ -14,19 +14,30 @@ const VIDEO: StarVideoModel[] = [
 
 const CATALOG = { video: VIDEO, image: [], chat: [], brands: [], fetchedAt: 0, videoLimits: { maxReferenceImages: 3, maxReferenceVideos: 0, mediaTypes: [] } } as StarCatalog
 
+/** The catalog once the console marks models as taking reference videos. */
+function marking(...ids: string[]): StarCatalog {
+  return { ...CATALOG, video: VIDEO.map(model => (ids.includes(model.id) ? { ...model, modes: [...(model.modes ?? []), 'reference_video'] } : model)) }
+}
+
 describe('视频参考 models', () => {
-  it('offers only the models the console sends a reference video on to', () => {
-    expect(VIDEO.filter(acceptsReferenceVideo).map(model => model.id)).toEqual(['sd-2-fast', 'MiniMax-H3', 'doubao-seedance-2-0-260128'])
-    expect(videoModelsFor(CATALOG, 'video2video').map(model => model.id)).toEqual(['sd-2-fast', 'MiniMax-H3', 'doubao-seedance-2-0-260128'])
+  it('takes no model on `reference` or on its name, so today 视频参考 is off', () => {
+    expect(VIDEO.filter(acceptsReferenceVideo)).toEqual([])
+    expect(videoModelsFor(CATALOG, 'video2video')).toEqual([])
+    expect(autoVideoModel(CATALOG, 'video2video', 5)).toBeUndefined()
+    expect(referenceVideoAvailable(CATALOG)).toBe(false)
+    expect(referenceVideoAvailable(null)).toBe(false)
   })
 
-  it('picks the cheapest of those on 自动, not Veo, which drops the video', () => {
-    expect(autoVideoModel(CATALOG, 'video2video', 5)?.id).toBe('MiniMax-H3')
-  })
-
-  it('also accepts a model whose catalog entry names reference videos outright', () => {
+  it('comes back once the console marks a model reference_video', () => {
     expect(acceptsReferenceVideo({ id: 'future-model', label: 'x', modes: ['reference_video'] })).toBe(true)
     expect(acceptsReferenceVideo({ id: 'future-model', label: 'x' })).toBe(false)
+    const catalog = marking('sd-2-fast', 'doubao-seedance-2-0-260128')
+    expect(referenceVideoAvailable(catalog)).toBe(true)
+    expect(videoModelsFor(catalog, 'video2video').map(model => model.id)).toEqual(['sd-2-fast', 'doubao-seedance-2-0-260128'])
+  })
+
+  it('picks the cheapest marked model on 自动, not Veo, which drops the video', () => {
+    expect(autoVideoModel(marking('sd-2-fast', 'doubao-seedance-2-0-260128'), 'video2video', 5)?.id).toBe('sd-2-fast')
   })
 
   it('leaves the other modes as they were', () => {

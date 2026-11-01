@@ -24,6 +24,7 @@ import {
   pickResolution,
   pickVideoModel,
   acceptsReferenceVideo,
+  REFERENCE_VIDEO_UNAVAILABLE,
   videoCost,
   type StarVideoType,
 } from './starMediaModels.js'
@@ -280,18 +281,19 @@ export async function startStarVideoTask(input: StarVideoInput, origin: StarTask
   const model = pickVideoModel(catalog, input.model?.trim() || undefined, type, input.duration)
   if (!model) {
     throw new StarApiError(
-      type === 'ref2video'
-        ? '没有支持参考视频的视频模型（MiniMax H3 或 Seedance 2 系列），请在 STAR 后台为应用启用'
-        : '没有可用的视频模型，请在 STAR 后台为应用启用视频模型',
+      type === 'ref2video' ? REFERENCE_VIDEO_UNAVAILABLE : '没有可用的视频模型，请在 STAR 后台为应用启用视频模型',
       400,
       'STAR_NO_VIDEO_MODEL',
     )
   }
-  // A listed model that drops reference videos would return an unrelated clip.
-  if (type === 'ref2video' && catalog?.video.some(item => item.id === model.id) && !acceptsReferenceVideo(model)) {
+  // A model that drops reference videos returns an unrelated clip and is still
+  // charged, so the job is refused before anything is submitted.
+  if (type === 'ref2video' && !acceptsReferenceVideo(model)) {
     const capable = (catalog?.video ?? []).filter(acceptsReferenceVideo).map(item => item.label || item.id)
     throw new StarApiError(
-      `${model.label || model.id} 不接受参考视频${capable.length ? `，可以改用：${capable.join('、')}` : ''}`,
+      capable.length
+        ? `${model.label || model.id} 不能按参考视频生成，可以改用：${capable.join('、')}`
+        : REFERENCE_VIDEO_UNAVAILABLE,
       400,
       'STAR_MODEL_NO_REFERENCE_VIDEO',
     )

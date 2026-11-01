@@ -126,7 +126,7 @@ export const STAR_TOOLS: Record<StarToolGroup, StarToolDefinition[]> = {
     {
       name: 'star_video_to_video',
       title: 'STAR 视频参考生成视频',
-      description: '以参考视频（动作、运镜或风格）为依据生成新视频，可同时给参考图。需要支持参考视频的模型（如 sd-2 系列）。',
+      description: '以参考视频（动作、运镜或风格）为依据生成新视频，可同时给参考图。只有 star_video_models 标为「可用参考视频」的模型能用；一个都没有时参考视频生成暂未开放，可以截取视频里的一帧，改用 star_image_to_video。',
       inputSchema: {
         type: 'object',
         properties: {

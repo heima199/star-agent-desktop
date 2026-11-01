@@ -122,7 +122,7 @@ const STAR_PLUGINS: StarPluginSpec[] = [
           '# STAR 视频参考生成视频',
           `调用 \`${starToolPrefix('star-video')}star_video_to_video\`，把参考视频放进 \`videos\`（最多 3 个），参考图放进 \`images\`。`,
           '- prompt 说明新视频的内容，以及要参考原视频的哪些方面（动作、运镜、节奏、风格）。',
-          '- 只有支持参考视频的模型可用；不确定时先调用 `star_video_models`，选择模式里含 reference 的模型。',
+          '- 只有 `star_video_models` 标为「可用参考视频」的模型能用。一个都没有时参考视频生成暂未开放：不要调用本工具，直接告诉用户，可以截取视频里的一帧，改用 `star_image_to_video`。',
           RESULT_RULES,
         ].join('\n'),
       },

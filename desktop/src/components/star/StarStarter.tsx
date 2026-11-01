@@ -20,7 +20,8 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useTabStore } from '../../stores/tabStore'
-import type { StarMode } from '../../stores/starStore'
+import { useStarStore, type StarMode } from '../../stores/starStore'
+import { referenceVideoAvailable } from '../../pages/star/starStudioModels'
 import { useStarBrand } from '../../stores/starBrandStore'
 import { useStarCreateStore } from '../../stores/starCreateStore'
 import { starCreateSpec, type StarCreateMode } from '../../lib/starCreateRequest'
@@ -117,8 +118,11 @@ const STUDIO_ENTRY: Partial<Record<StarCreateMode, { kind: 'image' | 'video'; mo
  */
 export function StarStarter({ mode, slot, onSuggestion }: { mode: Exclude<StarMode, 'code'>; slot?: string; onSuggestion: (text: string) => void }) {
   // Chat (and the legacy in-chat Design mode) start from the creation modes.
-  // A category that leads to a hidden page (PPT, 3D) is not offered.
-  const categories = (mode === 'work' ? WORK : DESIGN).filter(category => !category.page || !isStarPageHidden(category.page))
+  // A category that leads to a hidden page (PPT, 3D) is not offered, nor
+  // 视频参考 while no model takes reference videos.
+  const videoReferenceOn = useStarStore(s => referenceVideoAvailable(s.catalog))
+  const categories = (mode === 'work' ? WORK : DESIGN).filter(category =>
+    (!category.page || !isStarPageHidden(category.page)) && (videoReferenceOn || category.mode !== 'video2video'))
   const [selected, setSelected] = useState(categories[0]!.id)
   const brand = useStarBrand()
   const active = categories.find(category => category.id === selected) ?? categories[0]!

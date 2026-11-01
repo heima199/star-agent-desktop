@@ -26,18 +26,20 @@ const VIDEO_MODE_ALIASES: Record<Exclude<StarVideoType, 'ref2video'>, string[]> 
 const REFERENCE_VIDEO_MODES = ['reference_video', 'video', 'video2video', 'ref2video', 'multimodal']
 
 /**
- * Model families the console's video service passes reference videos on to:
- * MiniMax H3, Seedance 2 through meai (sd-2-*) and Seedance 2 official. Their
- * catalog entry only says `reference`, which also means reference images, so
- * that word alone let models that drop the video (Veo) take reference-video
- * jobs, and as the cheapest they were picked first.
+ * Only a model whose catalog entry names reference videos outright takes
+ * them. `reference` alone also means reference images, and no model is taken
+ * on its name any more: in production (2026-11-01) Seedance 2 through the
+ * router came back as plain text-to-video with the video dropped (still
+ * charged), and MiniMax H3 refused reference videos. Reference-video jobs are
+ * refused before anything is charged until the console marks a model
+ * `reference_video`.
  */
-const REFERENCE_VIDEO_FAMILIES = [/^minimax-h3/i, /^sd-2(?:-|$)/i, /seedance-2/i]
-
 export function acceptsReferenceVideo(model: StarVideoModel): boolean {
-  if (model.modes?.some(mode => REFERENCE_VIDEO_MODES.includes(mode.toLowerCase()))) return true
-  return REFERENCE_VIDEO_FAMILIES.some(family => family.test(model.id))
+  return Boolean(model.modes?.some(mode => REFERENCE_VIDEO_MODES.includes(mode.toLowerCase())))
 }
+
+/** Shown when a reference-video job has no model that takes reference videos. */
+export const REFERENCE_VIDEO_UNAVAILABLE = '参考视频生成暂未开放：现在的视频模型还不能按参考视频生成。可以截取视频里的一帧作为首帧或参考图，用图生视频。'
 
 export const IMAGE_SIZE_RE = /^(\d{3,4}x\d{3,4}|auto)$/
 

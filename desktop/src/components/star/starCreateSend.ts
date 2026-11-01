@@ -2,6 +2,7 @@ import { getStarBrandName } from '../../stores/starBrandStore'
 import { useStarCreateStore } from '../../stores/starCreateStore'
 import { useStarStore } from '../../stores/starStore'
 import { useUIStore } from '../../stores/uiStore'
+import { REFERENCE_VIDEO_PAUSED, referenceVideoAvailable } from '../../pages/star/starStudioModels'
 import {
   buildStarCreateBlock,
   collectStarCreateRefs,
@@ -35,6 +36,14 @@ export function prepareStarCreateSend(slot: string, attachments: readonly StarCr
   const resolved = resolveStarCreateMode(armed.mode, refs)
   if (!resolved.ok) {
     toast({ type: 'info', message: resolved.message })
+    return { armed: true, ok: false }
+  }
+  // A video attached to 文生视频 turns the job into 视频参考, which no model
+  // takes for now: stop here rather than send a job the server refuses. An
+  // unloaded catalog is left to the server, which refuses it the same way.
+  const catalog = useStarStore.getState().catalog
+  if (resolved.mode === 'video2video' && catalog && !referenceVideoAvailable(catalog)) {
+    toast({ type: 'info', message: REFERENCE_VIDEO_PAUSED })
     return { armed: true, ok: false }
   }
   if (!hasText && starCreateSpec(resolved.mode).kind !== 'vision') {

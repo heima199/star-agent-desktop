@@ -19,15 +19,26 @@ const CATALOG = {
   videoLimits: { maxReferenceImages: 3, maxReferenceVideos: 0, mediaTypes: [] },
 } as unknown as StarCatalog
 
+/** The catalog once the console marks models as taking reference videos. */
+function marking(...ids: string[]): StarCatalog {
+  return { ...CATALOG, video: CATALOG.video.map(model => (ids.includes(model.id) ? { ...model, modes: [...(model.modes ?? []), 'reference_video'] } : model)) }
+}
+
 describe('reference-video model choice', () => {
-  test('only models the console passes reference videos to take ref2video jobs', () => {
-    expect(CATALOG.video.filter(model => supportsVideoType(model, 'ref2video')).map(model => model.id))
-      .toEqual(['MiniMax-H3', 'sd-2-fast', 'doubao-seedance-2-0-260128'])
-    expect(acceptsReferenceVideo({ id: 'next', label: 'next', modes: ['reference_video'] })).toBe(true)
+  test('no model takes ref2video jobs on `reference` or on its name', () => {
+    expect(CATALOG.video.filter(model => supportsVideoType(model, 'ref2video'))).toEqual([])
+    expect(pickVideoModel(CATALOG, undefined, 'ref2video', 5)).toBeUndefined()
+    expect(acceptsReferenceVideo({ id: 'sd-2-fast', label: 'Sd 2 Fast' })).toBe(false)
   })
 
-  test('自动 picks the cheapest of them instead of Veo', () => {
-    expect(pickVideoModel(CATALOG, undefined, 'ref2video', 5)?.id).toBe('MiniMax-H3')
+  test('a model the console marks reference_video takes them', () => {
+    expect(acceptsReferenceVideo({ id: 'next', label: 'next', modes: ['reference_video'] })).toBe(true)
+    expect(marking('sd-2-fast', 'doubao-seedance-2-0-260128').video.filter(model => supportsVideoType(model, 'ref2video')).map(model => model.id))
+      .toEqual(['sd-2-fast', 'doubao-seedance-2-0-260128'])
+  })
+
+  test('自动 picks the cheapest marked model instead of Veo', () => {
+    expect(pickVideoModel(marking('sd-2-fast', 'doubao-seedance-2-0-260128'), undefined, 'ref2video', 5)?.id).toBe('sd-2-fast')
   })
 
   test('without such a model there is no stand-in for a reference-video job', () => {
