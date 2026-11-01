@@ -51,8 +51,13 @@ describe('STAR Agent product identity', () => {
     expect(JSON.stringify(pkg)).not.toMatch(/claude[ _-]?code[ _-]?haha/i)
   })
 
-  it('ships 1.0.0, the version STAR Code in the same installer carries', () => {
-    expect((pkg as { version?: string }).version).toBe('1.0.0')
+  // The app numbers its own releases (1.1.0 onwards); the bundled STAR Code
+  // IDE keeps its own version.
+  it('ships a plain release version, at least 1.1.0', () => {
+    const version = (pkg as { version?: string }).version ?? ''
+    expect(version).toMatch(/^\d+\.\d+\.\d+$/)
+    const [major = 0, minor = 0] = version.split('.').map(Number)
+    expect(major > 1 || (major === 1 && minor >= 1)).toBe(true)
   })
 
   it('keeps the Windows install registration of the previous app id so an upgrade replaces it', () => {

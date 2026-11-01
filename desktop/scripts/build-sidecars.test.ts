@@ -379,7 +379,10 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(metadata.title).toBe('STAR Agent')
     expect(metadata.publisher).toBe('STAR')
     expect(metadata.description).toBe('STAR Agent')
-    expect(metadata.version).toBe('1.0.0.0')
+    // The app version, padded to the four parts Windows wants.
+    const appVersion = JSON.parse(readFileSync(path.join(desktopRoot, 'package.json'), 'utf8')).version as string
+    expect(metadata.version).toBe(`${appVersion}.0`)
+    expect(metadata.version).toMatch(/^\d+\.\d+\.\d+\.\d+$/)
     expect(metadata.icon).toBe(path.join(desktopRoot, 'src-tauri', 'icons', 'icon.ico'))
     expect(readFileSync(metadata.icon).length).toBeGreaterThan(0)
     expect(JSON.stringify(metadata)).not.toMatch(/claude/i)

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { resolveAppVersion } from './appVersion'
@@ -27,6 +28,9 @@ describe('resolveAppVersion', () => {
   })
 
   it('agrees with the real desktop/package.json', () => {
-    expect(resolveAppVersion({ isPackaged: false, appVersion: '42.7.0', appRoot: path.join(__dirname, '..', '..') })).toBe('1.0.0')
+    const appRoot = path.join(__dirname, '..', '..')
+    const expected = JSON.parse(readFileSync(path.join(appRoot, 'package.json'), 'utf8')).version
+    expect(resolveAppVersion({ isPackaged: false, appVersion: '42.7.0', appRoot })).toBe(expected)
+    expect(expected).not.toBe('42.7.0')
   })
 })
