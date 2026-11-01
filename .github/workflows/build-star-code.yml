@@ -101,6 +101,9 @@ jobs:
           test -f code/out-build/date
           # Windows has no executable bit, so the archives carry none
           find code -name '*.sh' -exec chmod +x {} +
+          # build/npm/postinstall.js ends with `git config` in the repository;
+          # the commit for product.json comes from BUILD_SOURCEVERSION below
+          git init -q code
           echo "BUILD_SOURCEVERSION=$(tr -d '\r\n' < code/.star-build/commit)" >> "$GITHUB_ENV"
 
       - name: Setup Node.js

@@ -911,6 +911,8 @@ describe('STAR Code IDE packaging workflows', () => {
       expect(text).toContain(image)
     }
     expect(text).not.toContain('-latest","platform"')
+    // build/npm/postinstall.js runs `git config` in the checkout, so the unpacked sources need a repository
+    expect(stepOf(text, 'Download the sources and the compiled output')).toContain('git init -q code')
     expect(stepOf(text, 'Install dependencies for')).toContain('npm_config_arch: ${{ matrix.arch }}')
     expect(stepOf(text, 'Package')).toContain('vscode-${{ matrix.platform }}-${{ matrix.arch }}-ci')
     const mac = stepOf(text, 'Sign ad hoc, build the dmg and zip \\(macOS\\)')
