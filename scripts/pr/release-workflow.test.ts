@@ -891,3 +891,41 @@ describe('release desktop workflow', () => {
     expect(compiledSidecarSmoke).toContain('copyFile(builtExecutable, executable)')
   })
 })
+
+describe('STAR Code IDE packaging workflows', () => {
+  const stepOf = (workflow: string, stepName: string) =>
+    workflow.match(new RegExp(`- name: ${stepName}[\\s\\S]*?(?:\\n\\s{6}- name:|$)`))?.[0] ?? ''
+
+  test('Build STAR Code packages macOS on both chips and Windows on ARM64 from the archives attached to a release', () => {
+    const text = readFileSync('.github/workflows/build-star-code.yml', 'utf8')
+    const workflow = parse(text) as {
+      on: { workflow_dispatch: { inputs: Record<string, unknown> } }
+      permissions: Record<string, string>
+      jobs: { package: { 'timeout-minutes': number } }
+    }
+    expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual(['release_tag', 'targets'])
+    expect(workflow.permissions).toEqual({ contents: 'write' })
+    expect(workflow.jobs.package['timeout-minutes']).toBeGreaterThan(0)
+    // Code-OSS 1.99 native modules need the Xcode 16 and Visual Studio 2022 images, not the -latest ones
+    for (const image of ['"os":"macos-15"', '"os":"macos-15-intel"', '"os":"windows-2022"']) {
+      expect(text).toContain(image)
+    }
+    expect(text).not.toContain('-latest","platform"')
+    expect(stepOf(text, 'Install dependencies for')).toContain('npm_config_arch: ${{ matrix.arch }}')
+    expect(stepOf(text, 'Package')).toContain('vscode-${{ matrix.platform }}-${{ matrix.arch }}-ci')
+    const mac = stepOf(text, 'Sign ad hoc, build the dmg and zip \\(macOS\\)')
+    expect(mac).toContain('codesign --force --deep --sign -')
+    expect(mac).toContain('codesign --verify --deep --strict')
+    expect(stepOf(text, 'Check the binaries are ARM64 \\(Windows\\)')).toContain('0xaa64')
+    expect(stepOf(text, 'Attach the packages to the release')).toContain('gh release upload "$RELEASE_TAG"')
+  })
+
+  test('the Windows installer bundles the IDE built for its own chip and falls back to x64 only for ARM64', () => {
+    const stage = stepOf(readFileSync('.github/workflows/build-desktop-dev.yml', 'utf8'), 'Stage bundled STAR Code')
+    expect(stage).toContain('TARGET_ARCH: ${{ matrix.arch }}')
+    expect(stage).toContain('$zip = "STAR-Code-win32-$env:TARGET_ARCH.zip"')
+    expect(stage).toContain("if ($env:TARGET_ARCH -eq 'x64')")
+    expect(stage).toContain("$zip = 'STAR-Code-win32-x64.zip'")
+    expect(stage).toContain('--pattern $zip')
+  })
+})

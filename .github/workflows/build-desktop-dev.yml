@@ -202,21 +202,36 @@ jobs:
 
       # The Windows installer ships the STAR Code IDE next to the app
       # (build-resources/star-code, electron-builder extraResources). The IDE
-      # build (~460 MB) is not in git: it is the STAR-Code-win32-x64.zip asset
-      # of this repository's release named by the STAR_CODE_RELEASE_TAG variable.
+      # build (~460 MB) is not in git: it is the STAR-Code-win32-<arch>.zip asset
+      # of this repository's release named by the STAR_CODE_RELEASE_TAG variable
+      # (the ARM64 one comes from Build STAR Code (IDE)). A release without an
+      # ARM64 build gives the ARM64 installer the x64 IDE, which Windows on ARM
+      # runs under emulation.
       - name: Stage bundled STAR Code
         if: matrix.smoke_platform == 'windows'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           STAR_CODE_RELEASE_TAG: ${{ vars.STAR_CODE_RELEASE_TAG }}
+          TARGET_ARCH: ${{ matrix.arch }}
         run: |
           if (-not $env:STAR_CODE_RELEASE_TAG) {
             Write-Output '::error::Repository variable STAR_CODE_RELEASE_TAG is not set (the release holding STAR-Code-win32-x64.zip).'
             exit 1
           }
+          $assets = @(gh release view $env:STAR_CODE_RELEASE_TAG --json assets --jq '.assets[].name')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $zip = "STAR-Code-win32-$env:TARGET_ARCH.zip"
+          if ($assets -notcontains $zip) {
+            if ($env:TARGET_ARCH -eq 'x64') {
+              Write-Output "::error::Release $env:STAR_CODE_RELEASE_TAG has no $zip."
+              exit 1
+            }
+            Write-Output "::warning::Release $env:STAR_CODE_RELEASE_TAG has no $zip; this installer bundles the x64 IDE."
+            $zip = 'STAR-Code-win32-x64.zip'
+          }
           $dir = Join-Path $env:RUNNER_TEMP 'star-code'
-          gh release download $env:STAR_CODE_RELEASE_TAG --pattern 'STAR-Code-win32-x64.zip' --dir $dir
+          gh release download $env:STAR_CODE_RELEASE_TAG --pattern $zip --dir $dir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # The archive holds the build's contents at its root ("STAR Code.exe"
           # and its siblings). The bsdtar in System32 unpacks the ~11k files far
@@ -224,7 +239,7 @@ jobs:
           # which cannot read zip.
           $build = Join-Path $dir 'build'
           New-Item -ItemType Directory -Force -Path $build | Out-Null
-          & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf (Join-Path $dir 'STAR-Code-win32-x64.zip') -C $build
+          & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf (Join-Path $dir $zip) -C $build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Set-Location desktop
           bun run stage:star-code --from $build
