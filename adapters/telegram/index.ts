@@ -33,6 +33,7 @@ import { restoreStoredSessionBinding, SESSION_RECONNECT_NOTICE, type SessionRest
 import { SessionSelectionController } from '../common/session-selection.js'
 import { syncImPermissionState } from '../common/permission-sync.js'
 import { isAllowedUser, tryPair } from '../common/pairing.js'
+import { getImAgentName } from '../common/brand.js'
 import { TelegramMediaService } from './media.js'
 import { AttachmentStore } from '../common/attachment/attachment-store.js'
 import { checkAttachmentLimit } from '../common/attachment/attachment-limits.js'
@@ -552,9 +553,9 @@ async function routeUserMessage(
     const displayName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ')
     const success = tryPair(text.trim(), { userId, displayName }, 'telegram')
     if (success) {
-      await ctx.reply('✅ 配对成功！现在可以开始聊天了。\n\n发送消息即可与 Claude 对话。')
+      await ctx.reply(`✅ 配对成功！现在可以开始聊天了。\n\n发送消息即可与 ${getImAgentName()} 对话。`)
     } else {
-      await ctx.reply('🔒 未授权。请在 Claude Code 桌面端生成配对码后发送给我。')
+      await ctx.reply(`🔒 未授权。请在 ${getImAgentName()} 桌面端生成配对码后发送给我。`)
     }
     return
   }

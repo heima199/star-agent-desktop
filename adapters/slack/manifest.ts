@@ -1,5 +1,5 @@
 /**
- * Slack app manifest for Claude Code Desktop.
+ * Slack app manifest for the desktop app.
  *
  * Slack has no scan-to-create flow, so its closest equivalent is a manifest:
  * the user opens Slack's "create an app" page with the whole configuration
@@ -9,6 +9,8 @@
  * Keeping the manifest here rather than in the docs means the scopes the app
  * requests and the API methods the adapter calls are edited together.
  */
+
+import { getImAgentName } from '../common/brand.js'
 
 const CREATE_APP_URL = 'https://api.slack.com/apps'
 
@@ -28,11 +30,12 @@ export const SLACK_BOT_SCOPES = [
 
 export type SlackManifest = Record<string, unknown>
 
-export function buildSlackAppManifest(appName = 'STAR Agent'): SlackManifest {
+/** `appName` defaults to "X Agent", X the product name the STAR console sets (common/brand.ts). */
+export function buildSlackAppManifest(appName = getImAgentName()): SlackManifest {
   return {
     display_information: {
       name: appName,
-      description: 'Drive a local Claude Code session from Slack direct messages.',
+      description: `Chat with your local ${appName} from Slack direct messages.`,
       background_color: '#1a1a1a',
     },
     features: {

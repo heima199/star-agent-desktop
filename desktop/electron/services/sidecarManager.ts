@@ -715,6 +715,7 @@ export function createAdapterPlan({
   flag,
   h5DistDir = path.join(desktopRoot, 'dist'),
   env = process.env,
+  homeDir = os.homedir(),
 }: {
   desktopRoot: string
   appRoot: string
@@ -722,15 +723,31 @@ export function createAdapterPlan({
   flag: AdapterFlag
   h5DistDir?: string
   env?: NodeJS.ProcessEnv
+  homeDir?: string
 }): SidecarPlan {
   return {
     command: resolveSidecarExecutable(desktopRoot),
     args: ['adapters', '--app-root', appRoot, flag],
     env: {
       ...buildSidecarEnv(withBundledRipgrepPath(env, desktopRoot), h5DistDir),
+      ...adapterDefaultWorkDirEnv(env, homeDir),
       ADAPTER_SERVER_URL: httpToWebSocketUrl(serverUrl),
     },
   }
+}
+
+/**
+ * Where an IM session starts when Settings > IM 接入 names no default project:
+ * the home directory, like a new chat in the window. Without this the adapter
+ * falls back to its own working directory, which for the app is wherever it
+ * was launched from: the install folder from a Windows shortcut, the source
+ * tree in development. IM sessions then ran (and saved what they made) there,
+ * and the sidebar listed them under that folder's name. An explicit
+ * ADAPTER_DEFAULT_PROJECT_DIR / CLAUDE_ADAPTER_DEFAULT_WORK_DIR still wins.
+ */
+function adapterDefaultWorkDirEnv(env: NodeJS.ProcessEnv, homeDir: string): NodeJS.ProcessEnv {
+  if (env.ADAPTER_DEFAULT_PROJECT_DIR?.trim() || env.CLAUDE_ADAPTER_DEFAULT_WORK_DIR?.trim()) return {}
+  return homeDir ? { ADAPTER_DEFAULT_PROJECT_DIR: homeDir } : {}
 }
 
 // Synchronous spawn errors that mean the sidecar file exists but the OS refused

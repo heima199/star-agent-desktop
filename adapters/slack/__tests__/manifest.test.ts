@@ -1,10 +1,31 @@
-import { describe, expect, it } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { resetImBrandCacheForTests } from '../../common/brand.js'
 import {
   buildSlackAppManifest,
   buildSlackCreateAppUrl,
   buildSlackManifestJson,
   SLACK_BOT_SCOPES,
 } from '../manifest.js'
+
+// The default app name comes from the brand cache in the config dir; keep the
+// user's real one out of these tests.
+let configDir = ''
+let savedConfigDir: string | undefined
+beforeEach(() => {
+  savedConfigDir = process.env.CLAUDE_CONFIG_DIR
+  configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'im-slack-manifest-'))
+  process.env.CLAUDE_CONFIG_DIR = configDir
+  resetImBrandCacheForTests()
+})
+afterEach(() => {
+  if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = savedConfigDir
+  fs.rmSync(configDir, { recursive: true, force: true })
+  resetImBrandCacheForTests()
+})
 
 describe('buildSlackAppManifest', () => {
   // Socket Mode is what removes the need for a public request URL; without it
@@ -48,6 +69,18 @@ describe('buildSlackAppManifest', () => {
 
     expect(manifest.display_information.name).toBe('STAR Agent')
     expect(manifest.features.bot_user.display_name).toBe('STAR Agent')
+  })
+
+  it('follows the product name the STAR console set', () => {
+    fs.mkdirSync(path.join(configDir, 'cc-haha', 'star'), { recursive: true })
+    fs.writeFileSync(path.join(configDir, 'cc-haha', 'star', 'brand.json'), JSON.stringify({ name: 'PRIVO', updatedAt: 1 }))
+
+    const manifest = buildSlackAppManifest() as any
+
+    expect(manifest.display_information.name).toBe('PRIVO Agent')
+    expect(manifest.features.bot_user.display_name).toBe('PRIVO Agent')
+    expect(manifest.display_information.description).toContain('PRIVO Agent')
+    expect(JSON.stringify(manifest)).not.toMatch(/claude/i)
   })
 })
 

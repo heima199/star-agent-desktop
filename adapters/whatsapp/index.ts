@@ -33,6 +33,7 @@ import { SessionSelectionController } from '../common/session-selection.js'
 import { createAdapterClient } from '../common/adapter-client.js'
 import { restoreStoredSessionBinding, SESSION_RECONNECT_NOTICE, type SessionRestoreResult } from '../common/session-recovery.js'
 import { isAllowedUser, tryPair } from '../common/pairing.js'
+import { getImAgentName } from '../common/brand.js'
 import { AttachmentStore } from '../common/attachment/attachment-store.js'
 import { checkAttachmentLimit } from '../common/attachment/attachment-limits.js'
 import { ImageBlockWatcher } from '../common/attachment/image-block-watcher.js'
@@ -146,7 +147,7 @@ async function sendWhatsAppText(jid: string, text: string): Promise<void> {
 }
 
 async function sendHelp(jid: string): Promise<void> {
-  await sendWhatsAppText(jid, `Claude Code WhatsApp 已就绪。\n\n${formatImHelp()}`)
+  await sendWhatsAppText(jid, `${getImAgentName()} 已就绪。\n\n${formatImHelp()}`)
 }
 
 async function handlePermissionDecision(chatId: string, decision: PermissionDecision): Promise<void> {
@@ -445,11 +446,12 @@ async function routeUserMessage(
     const success = attachments.length === 0
       ? tryPair(text.trim(), { userId, displayName }, 'whatsapp')
       : false
+    const agentName = getImAgentName()
     await sendWhatsAppText(
       chatId,
       success
-        ? '配对成功！现在可以开始聊天了。\n\n发送消息即可与 Claude 对话。'
-        : '未授权。请在 Claude Code 桌面端生成配对码后发送给我。',
+        ? `配对成功！现在可以开始聊天了。\n\n发送消息即可与 ${agentName} 对话。`
+        : `未授权。请在 ${agentName} 桌面端生成配对码后发送给我。`,
     )
     return
   }

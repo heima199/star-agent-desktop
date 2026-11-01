@@ -22,6 +22,7 @@ import { SessionSelectionController } from '../common/session-selection.js'
 import { createAdapterClient } from '../common/adapter-client.js'
 import { restoreStoredSessionBinding, SESSION_RECONNECT_NOTICE, type SessionRestoreResult } from '../common/session-recovery.js'
 import { isAllowedUser, tryPair } from '../common/pairing.js'
+import { getImAgentName } from '../common/brand.js'
 import { AttachmentStore } from '../common/attachment/attachment-store.js'
 import { checkAttachmentLimit } from '../common/attachment/attachment-limits.js'
 import { WechatTypingController } from './typing.js'
@@ -474,11 +475,12 @@ async function routeUserMessage(message: WechatMessage): Promise<void> {
     const success = text
       ? tryPair(text, { userId: chatId, displayName: 'WeChat User' }, 'wechat')
       : false
+    const agentName = getImAgentName()
     await sendText(
       chatId,
       success
-        ? '配对成功！现在可以开始聊天了。\n\n发送消息即可与 Claude 对话。发送 /help 查看可用命令。'
-        : '未授权。请先在 Claude Code 桌面端完成微信扫码绑定，再生成 IM 配对码后发送给我。',
+        ? `配对成功！现在可以开始聊天了。\n\n发送消息即可与 ${agentName} 对话。发送 /help 查看可用命令。`
+        : `未授权。请先在 ${agentName} 桌面端完成微信扫码绑定，再生成 IM 配对码后发送给我。`,
     )
     return
   }

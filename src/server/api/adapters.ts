@@ -38,6 +38,7 @@ import {
   startQqQrLogin,
 } from '../../../adapters/qq/qr-auth.js'
 import { buildSlackCreateAppUrl, buildSlackManifestJson } from '../../../adapters/slack/manifest.js'
+import { getStarAgentName } from '../../utils/starBrand.js'
 
 const ALLOWED_TOP_KEYS = new Set(['serverUrl', 'defaultProjectDir', 'allowedProjectRoots', 'telegram', 'feishu', 'wechat', 'dingtalk', 'whatsapp', 'wecom', 'qq', 'slack', 'pairing'])
 const MAX_TEXT_LENGTH = 16_384
@@ -394,9 +395,14 @@ type RegistrationBeginPayload = {
   qrDataUrl?: string
 }
 
-/** Pre-filled on Feishu's confirmation page; the user can still edit both. */
-const FEISHU_REGISTRATION_APP_NAME = 'STAR Agent'
-const FEISHU_REGISTRATION_APP_DESC = '把飞书私聊接到本机的 STAR Agent 会话。'
+/**
+ * Pre-filled on Feishu's confirmation page; the user can still edit both.
+ * "X Agent", X the product name the STAR console sets (utils/starBrand.ts).
+ */
+function feishuRegistrationApp(): { appName: string; appDescription: string } {
+  const appName = getStarAgentName()
+  return { appName, appDescription: `把飞书私聊接到本机的 ${appName} 会话。` }
+}
 
 const DINGTALK_REGISTRATION_BASE_URL =
   process.env.DINGTALK_REGISTRATION_BASE_URL?.trim() || 'https://oapi.dingtalk.com'
@@ -595,10 +601,7 @@ async function readSessionKey(req: Request): Promise<string> {
  */
 async function handleFeishuAdaptersApi(req: Request, tail: string[]): Promise<Response> {
   if (req.method === 'POST' && tail[0] === 'registration' && tail[1] === 'begin') {
-    const begun = await beginFeishuRegistration({
-      appName: FEISHU_REGISTRATION_APP_NAME,
-      appDescription: FEISHU_REGISTRATION_APP_DESC,
-    })
+    const begun = await beginFeishuRegistration(feishuRegistrationApp())
     return Response.json({
       ...begun,
       qrDataUrl: await createQrDataUrl(begun.verificationUri),

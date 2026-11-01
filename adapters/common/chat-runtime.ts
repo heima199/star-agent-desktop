@@ -17,6 +17,7 @@
  */
 
 import * as path from 'node:path'
+import { getImAgentName } from './brand.js'
 import { enqueue } from './chat-queue.js'
 import { adapterMigrationLifecycle } from './migration-lifecycle.js'
 import {
@@ -226,11 +227,12 @@ export class ImChatRuntime {
       const paired = text
         ? tryPair(text, { userId, displayName }, this.port.platform)
         : false
+      const agentName = getImAgentName()
       await this.port.sendNotice(
         chatId,
         paired
-          ? '配对成功！现在可以开始聊天了。\n\n发送消息即可与 Claude 对话，发送 /help 查看可用命令。'
-          : '未授权。请在 Claude Code 桌面端生成配对码后发送给我。',
+          ? `配对成功！现在可以开始聊天了。\n\n发送消息即可与 ${agentName} 对话，发送 /help 查看可用命令。`
+          : `未授权。请在 ${agentName} 桌面端生成配对码后发送给我。`,
       )
       return
     }

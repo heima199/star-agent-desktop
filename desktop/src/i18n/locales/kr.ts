@@ -1845,9 +1845,7 @@ export const kr: Record<TranslationKey, string> = {
 
   // Settings > Adapters
   'settings.tab.adapters': 'IM 어댑터',
-  'settings.adapters.description': 'Telegram, Feishu, WeChat, DingTalk, WhatsApp, WeCom, QQ, Slack을 통해 {brandAgent}와 채팅할 수 있도록 IM 어댑터를 구성합니다. 자세한 설정은',
-  'settings.adapters.configurationDocs': '문서 링크',
-  'settings.adapters.descriptionAfterDocs': '를 참고하세요.',
+  'settings.adapters.description': 'Telegram, Feishu, WeChat, DingTalk, WhatsApp, WeCom, QQ, Slack을 통해 {brandAgent}와 채팅할 수 있도록 IM 어댑터를 구성합니다.',
   'settings.adapters.imTabs': 'IM 어댑터',
   'settings.adapters.telegram': 'Telegram',
   'settings.adapters.feishu': 'Feishu',
@@ -1861,7 +1859,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.adapters.appSecret': 'App Secret',
   'settings.adapters.appSecretPlaceholder': 'Feishu 개방 플랫폼에서 가져오기',
   'settings.adapters.feishuCreateBotTitle': 'Feishu 봇이 필요하신가요?',
-  'settings.adapters.feishuCreateBotDesc': '필요한 권한이 이미 구성된 Feishu 봇을 문서에 안내된 OpenClaw 템플릿으로 만드세요. 그런 다음 아래에 App ID와 App Secret을 붙여넣으세요.',
+  'settings.adapters.feishuCreateBotDesc': '필요한 권한이 이미 구성된 Feishu 봇을 Feishu 공식 봇 템플릿으로 만드세요. 그런 다음 아래에 App ID와 App Secret을 붙여넣으세요.',
   'settings.adapters.feishuCreateBotAction': 'Feishu 봇 만들기',
   'settings.adapters.feishuCreateBotStepCreate': '템플릿에서 봇을 만듭니다.',
   'settings.adapters.feishuCreateBotStepFill': 'App ID와 App Secret을 복사하여 여기에 입력합니다.',

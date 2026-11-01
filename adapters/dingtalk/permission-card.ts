@@ -1,3 +1,4 @@
+import { getImAgentName } from '../common/brand.js'
 import { truncateInput } from '../common/format.js'
 import { parsePermitCallbackData, type PermissionDecision } from '../common/permission.js'
 
@@ -18,7 +19,7 @@ export function buildDingTalkPermissionCardParams(
   const denyValue = { action: 'permit', requestId, allowed: false }
 
   return {
-    title: 'Claude Code 需要权限确认',
+    title: `${getImAgentName()} 需要权限确认`,
     toolName,
     requestId,
     inputPreview: truncateInput(input, 600),

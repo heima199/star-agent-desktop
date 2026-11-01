@@ -8,7 +8,6 @@ import { useSettingsStore } from '../stores/settingsStore'
 import type { AdapterFileConfig } from '../types/adapter'
 
 const FEISHU_CREATE_BOT_URL = 'https://open.feishu.cn/page/openclaw?form=multiAgent'
-const IM_CONFIG_DOCS_URL = 'https://cchaha.ai/im/'
 
 function renderAdapterSettings(
   config: AdapterFileConfig,
@@ -84,7 +83,7 @@ afterEach(() => {
 })
 
 describe('AdapterSettings IM setup entry', () => {
-  it('shows Telegram first by default and links to the unified documentation URL', () => {
+  it('shows Telegram first by default and links to no outside documentation site', () => {
     renderAdapterSettings({})
 
     const tabs = screen.getAllByRole('tab').map((tab) => tab.textContent)
@@ -100,10 +99,9 @@ describe('AdapterSettings IM setup entry', () => {
     ])
     expect(screen.getByRole('tab', { name: 'Telegram' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByLabelText('Bot Token')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'documentation link' })).toHaveAttribute(
-      'href',
-      IM_CONFIG_DOCS_URL,
-    )
+    // The upstream project's docs site is not this product's.
+    expect(screen.queryByRole('link', { name: 'documentation link' })).toBeNull()
+    expect(document.querySelector('a[href*="cchaha"]')).toBeNull()
   })
 })
 
@@ -224,7 +222,8 @@ describe('AdapterSettings Feishu onboarding', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Feishu' }))
 
     expect(screen.getByText('Need a Feishu bot?')).toBeInTheDocument()
-    expect(screen.getByText(/OpenClaw template/)).toBeInTheDocument()
+    expect(screen.getByText(/official Feishu bot template/)).toBeInTheDocument()
+    expect(screen.queryByText(/OpenClaw/)).toBeNull()
     expect(screen.getByText('1. Create the bot from the template.')).toBeInTheDocument()
     expect(screen.getByText('2. Copy its App ID and App Secret, then fill them in here.')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /create feishu bot/i })).toHaveAttribute(

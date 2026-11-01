@@ -235,6 +235,27 @@ describe('ImChatRuntime authorization', () => {
 
     expect(bridge.sent).toHaveLength(0)
     expect(notices[0]).toContain('未授权')
+    expect(notices[0]).toContain('STAR Agent 桌面端')
+    expect(notices[0]).not.toMatch(/claude/i)
+  })
+
+  // The bot speaks for this app: the product name the STAR console set
+  // (brand.json in the config dir), never "Claude Code".
+  it('names the product the STAR console set in its pairing replies', async () => {
+    writeAdapterConfig({
+      wecom: { pairedUsers: [], allowedUsers: [] },
+      pairing: { code: 'ABC234', expiresAt: Date.now() + 60_000, createdAt: Date.now() },
+    })
+    fs.mkdirSync(path.join(tmpDir, 'cc-haha', 'star'), { recursive: true })
+    fs.writeFileSync(path.join(tmpDir, 'cc-haha', 'star', 'brand.json'), JSON.stringify({ name: 'PRIVO', updatedAt: 1 }))
+    const { runtime, notices } = createRuntime()
+
+    await inbound(runtime, 'hello', { userId: 'stranger-1', dedupKey: 'brand-1' })
+    await inbound(runtime, 'ABC234', { userId: 'stranger-2', dedupKey: 'brand-2' })
+
+    expect(notices[0]).toBe('未授权。请在 PRIVO Agent 桌面端生成配对码后发送给我。')
+    expect(notices[1]).toContain('与 PRIVO Agent 对话')
+    expect(notices.join('\n')).not.toMatch(/claude/i)
   })
 
   it('pairs on a valid code and then forwards the next message', async () => {
@@ -526,8 +547,14 @@ describe('ImChatRuntime server stream', () => {
       text: `![inside](${insidePath}) ![outside](/etc/hosts)`,
     })
     await runtime.handleServerMessage(CHAT_ID, { type: 'message_complete' })
-    // The upload is dispatched without blocking the stream.
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    // The upload is dispatched without blocking the stream, so wait for it
+    // rather than for a fixed 20 ms: on a busy machine the read takes longer.
+    const deadline = Date.now() + 5_000
+    while (images.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    // A little longer, so a wrongly accepted outside image would show up too.
+    await new Promise((resolve) => setTimeout(resolve, 50))
 
     expect(images).toEqual([{ mime: 'image/png', alt: 'inside' }])
   })

@@ -1840,9 +1840,7 @@ export const zh: Record<TranslationKey, string> = {
 
   // Settings > Adapters
   'settings.tab.adapters': 'IM 接入',
-  'settings.adapters.description': '配置即时通讯适配器，通过 Telegram、飞书、微信、钉钉、WhatsApp、企业微信、QQ 或 Slack 与 {brandAgent} 对话。首次配置请参考',
-  'settings.adapters.configurationDocs': '文档地址',
-  'settings.adapters.descriptionAfterDocs': '。',
+  'settings.adapters.description': '配置即时通讯适配器，通过 Telegram、飞书、微信、钉钉、WhatsApp、企业微信、QQ 或 Slack 与 {brandAgent} 对话。',
   'settings.adapters.imTabs': '即时通讯适配器',
   'settings.adapters.telegram': 'Telegram',
   'settings.adapters.feishu': '飞书',
@@ -1856,7 +1854,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.adapters.appSecret': 'App Secret',
   'settings.adapters.appSecretPlaceholder': '从飞书开放平台获取',
   'settings.adapters.feishuCreateBotTitle': '还没有飞书机器人？',
-  'settings.adapters.feishuCreateBotDesc': '使用文档中的官方 OpenClaw 模板，一键创建已预配权限的飞书机器人。创建后把 App ID 和 App Secret 填到下方。',
+  'settings.adapters.feishuCreateBotDesc': '使用飞书官方的机器人模板，一键创建已预配权限的飞书机器人。创建后把 App ID 和 App Secret 填到下方。',
   'settings.adapters.feishuCreateBotAction': '一键创建飞书机器人',
   'settings.adapters.feishuCreateBotStepCreate': '点击模板创建机器人。',
   'settings.adapters.feishuCreateBotStepFill': '复制 App ID 和 App Secret，回到这里填写。',

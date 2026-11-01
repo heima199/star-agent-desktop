@@ -348,9 +348,12 @@ describe('AdapterHttpClient', () => {
 
       expect(result.sessions.map((session) => session.id)).toEqual(['session-1'])
       expect(result.total).toBe(2)
-      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
-        `http://127.0.0.1:3456/api/sessions?project=${encodeURIComponent(rootDir)}&limit=10&offset=5`,
-      )
+      // Compare the decoded query, not one hand-encoded spelling of it: the
+      // client form-encodes (`~` becomes %7E), and a Windows temp dir is often
+      // an 8.3 short path such as C:\Users\ADMINI~1\...
+      const called = new URL((globalThis.fetch as any).mock.calls[0][0])
+      expect(`${called.origin}${called.pathname}`).toBe('http://127.0.0.1:3456/api/sessions')
+      expect(Object.fromEntries(called.searchParams)).toEqual({ project: rootDir, limit: '10', offset: '5' })
     } finally {
       fs.rmSync(rootDir, { recursive: true, force: true })
     }
@@ -460,9 +463,10 @@ describe('AdapterHttpClient', () => {
       const result = await client.listSkills(rootDir)
 
       expect(result.skills[0]?.name).toBe('reviewer')
-      expect((globalThis.fetch as any).mock.calls[0][0]).toBe(
-        `http://127.0.0.1:3456/api/skills?cwd=${encodeURIComponent(fs.realpathSync(rootDir))}`,
-      )
+      // Decoded query, as in the listSessions test above.
+      const called = new URL((globalThis.fetch as any).mock.calls[0][0])
+      expect(`${called.origin}${called.pathname}`).toBe('http://127.0.0.1:3456/api/skills')
+      expect(Object.fromEntries(called.searchParams)).toEqual({ cwd: fs.realpathSync(rootDir) })
     } finally {
       fs.rmSync(rootDir, { recursive: true, force: true })
     }

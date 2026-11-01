@@ -225,6 +225,18 @@ describe('Electron sidecar manager', () => {
     }
   })
 
+  // The app's own working directory (the install folder, or the source tree in
+  // development) is no place for an IM session to run and save its files in.
+  it('starts IM sessions in the home directory unless a default is configured', () => {
+    const base = { desktopRoot: '/app/desktop', appRoot: '/app', serverUrl: 'http://127.0.0.1:4567', flag: '--wechat' as const }
+
+    expect(createAdapterPlan({ ...base, env: {}, homeDir: '/home/me' }).env.ADAPTER_DEFAULT_PROJECT_DIR).toBe('/home/me')
+    expect(createAdapterPlan({ ...base, env: { ADAPTER_DEFAULT_PROJECT_DIR: '/work' }, homeDir: '/home/me' }).env.ADAPTER_DEFAULT_PROJECT_DIR).toBe('/work')
+    const legacy = createAdapterPlan({ ...base, env: { CLAUDE_ADAPTER_DEFAULT_WORK_DIR: '/legacy' }, homeDir: '/home/me' }).env
+    expect(legacy.ADAPTER_DEFAULT_PROJECT_DIR).toBeUndefined()
+    expect(legacy.CLAUDE_ADAPTER_DEFAULT_WORK_DIR).toBe('/legacy')
+  })
+
   // The flag list is the contract between this planner, the launcher's ADAPTERS
   // table and the runtime's spawn loop; a platform missing from any one of them
   // simply never starts.

@@ -31,6 +31,13 @@ export function createFeishuHttpClient(): HttpInstance {
         // retain Axios's public timeout code and message for callers/retries.
         error.code = agent.timeoutError.code
         error.message = agent.timeoutError.message
+      } else if (agent.proxyRefusal && !error?.response) {
+        // The proxy refused CONNECT but its answer never reached Axios (Bun on
+        // Windows reports "Socket is closed"; see FeishuProxyAgent). Keep the
+        // status, so a 407 still reads as a proxy sign-in problem.
+        const { statusCode, statusText = '', headers = {} } = agent.proxyRefusal
+        error.message = `Proxy refused the connection: ${statusCode} ${statusText}`.trim()
+        error.response = { status: statusCode, statusText, headers, data: '' }
       }
       throw error
     }).finally(() => {

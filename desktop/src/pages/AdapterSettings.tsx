@@ -33,7 +33,6 @@ type AdapterUnbindTarget =
   | 'slackApp'
 
 const FEISHU_CREATE_BOT_URL = 'https://open.feishu.cn/page/openclaw?form=multiAgent'
-const IM_CONFIG_DOCS_URL = 'https://cchaha.ai/im/'
 
 // Section heads inside the IM card use the settings-row type: 13 medium title
 // over a 12 tertiary line, matching `SettingsRow`.
@@ -940,23 +939,11 @@ export function AdapterSettings() {
     <div className="min-w-0">
       {/* Page header. The pane opened straight onto its description, the only
           one of the sixteen sections without a title. */}
+      {/* No setup-docs link: the only docs were the upstream project's site,
+          which is not this product's. */}
       <SettingsPageHeader
         title={t('settings.tab.adapters')}
-        description={(
-          <>
-            {t('settings.adapters.description')}{' '}
-            <a
-              href={IM_CONFIG_DOCS_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-0.5 rounded-[var(--radius-xs)] text-[var(--color-text-accent)] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface)]"
-            >
-              {t('settings.adapters.configurationDocs')}
-              <ExternalLink size={12} strokeWidth={2} aria-hidden="true" />
-            </a>
-            {t('settings.adapters.descriptionAfterDocs')}
-          </>
-        )}
+        description={t('settings.adapters.description')}
       />
 
       {/* Pairing */}

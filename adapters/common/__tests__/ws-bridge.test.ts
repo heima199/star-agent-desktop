@@ -188,8 +188,11 @@ describe('WsBridge: handler serialization', () => {
     serverWs.send(JSON.stringify({ tag: '2', delay: 5 }))
     serverWs.send(JSON.stringify({ tag: '3', delay: 5 }))
 
-    // Wait long enough for all three handlers to run serially
-    await new Promise((r) => setTimeout(r, 200))
+    // Wait for all three handlers instead of a fixed 200 ms, which a busy
+    // machine overran (the last handler had not finished). The order check
+    // below is what proves serialization.
+    const deadline = Date.now() + 5_000
+    while (events.length < 6 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
 
     expect(events).toEqual([
       'start:1', 'end:1',
@@ -219,7 +222,9 @@ describe('WsBridge: handler serialization', () => {
     serverWs.send(JSON.stringify({ throw: true }))
     serverWs.send(JSON.stringify({ tag: 'after' }))
 
-    await new Promise((r) => setTimeout(r, 80))
+    // Same bounded wait as the FIFO test above, not a fixed 80 ms.
+    const deadline = Date.now() + 5_000
+    while (events.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
 
     expect(events).toEqual(['throwing', 'ok:after'])
 

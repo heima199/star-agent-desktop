@@ -167,7 +167,9 @@ beforeAll(async () => {
   spies.push(spyOn(StreamingCard.prototype, 'abort').mockImplementation(async () => {}))
   spies.push(spyOn(StreamingCard.prototype, 'finalize').mockImplementation(async () => {}))
   whatsapp.useWhatsAppSocket({ sendMessage: async (_chatId: string, message: { text: string }) => { notices.push(message.text) } } as any)
-})
+  // Loading four whole adapter entrypoints is the slow part of this file; in a
+  // full run on a busy machine it overran the default hook timeout.
+}, 60_000)
 
 afterAll(async () => {
   for (const adapter of [feishu, dingtalk, wechat, whatsapp]) {

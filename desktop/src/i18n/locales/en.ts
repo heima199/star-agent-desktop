@@ -1842,9 +1842,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
 
   // Settings > Adapters
   'settings.tab.adapters': 'IM Adapters',
-  'settings.adapters.description': 'Configure IM adapters to chat with {brandAgent} via Telegram, Feishu, WeChat, DingTalk, WhatsApp, WeCom, QQ, or Slack. For setup details, see',
-  'settings.adapters.configurationDocs': 'documentation link',
-  'settings.adapters.descriptionAfterDocs': '.',
+  'settings.adapters.description': 'Configure IM adapters to chat with {brandAgent} via Telegram, Feishu, WeChat, DingTalk, WhatsApp, WeCom, QQ, or Slack.',
   'settings.adapters.imTabs': 'IM adapter',
   'settings.adapters.telegram': 'Telegram',
   'settings.adapters.feishu': 'Feishu',
@@ -1858,7 +1856,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
   'settings.adapters.appSecret': 'App Secret',
   'settings.adapters.appSecretPlaceholder': 'From Feishu Open Platform',
   'settings.adapters.feishuCreateBotTitle': 'Need a Feishu bot?',
-  'settings.adapters.feishuCreateBotDesc': 'Use the documented OpenClaw template to create a Feishu bot with the required permissions already configured. Then paste the App ID and App Secret below.',
+  'settings.adapters.feishuCreateBotDesc': 'Use the official Feishu bot template to create a bot with the required permissions already configured. Then paste the App ID and App Secret below.',
   'settings.adapters.feishuCreateBotAction': 'Create Feishu bot',
   'settings.adapters.feishuCreateBotStepCreate': 'Create the bot from the template.',
   'settings.adapters.feishuCreateBotStepFill': 'Copy its App ID and App Secret, then fill them in here.',

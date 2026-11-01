@@ -1,3 +1,4 @@
+import { getImAgentName } from '../common/brand.js'
 import { formatImHelp } from '../common/format.js'
 import { listProjectSessionHistory, restoreSelectedSession } from '../common/session-selection.js'
 import { SESSION_RECONNECT_NOTICE, type SessionRestoreResult } from '../common/session-recovery.js'
@@ -125,7 +126,7 @@ export async function ensureAuthorizedTelegramPrivateChat(
 ): Promise<boolean> {
   if (!ctx.from || ctx.chat?.type !== 'private') return false
   if (isAllowedUser(ctx.from.id)) return true
-  await ctx.reply('🔒 未授权。请在 Claude Code 桌面端生成配对码后发送给我。')
+  await ctx.reply(`🔒 未授权。请在 ${getImAgentName()} 桌面端生成配对码后发送给我。`)
   return false
 }
 
@@ -760,7 +761,7 @@ export function createTelegramCommandController(deps: TelegramCommandControllerD
 
 export function buildTelegramHelpText(): string {
   return [
-    '👋 Claude Code Bot 已就绪。',
+    `👋 ${getImAgentName()} 已就绪。`,
     '',
     formatImHelp(),
     '',

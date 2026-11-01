@@ -1843,9 +1843,7 @@ export const jp: Record<TranslationKey, string> = {
 
   // Settings > Adapters
   'settings.tab.adapters': 'IM アダプター',
-  'settings.adapters.description': 'Telegram、Feishu、WeChat、DingTalk、WhatsApp、WeCom、QQ、Slack 経由で {brandAgent} とチャットできるよう IM アダプターを設定します。詳しい設定手順は',
-  'settings.adapters.configurationDocs': 'ドキュメントリンク',
-  'settings.adapters.descriptionAfterDocs': 'を参照してください。',
+  'settings.adapters.description': 'Telegram、Feishu、WeChat、DingTalk、WhatsApp、WeCom、QQ、Slack 経由で {brandAgent} とチャットできるよう IM アダプターを設定します。',
   'settings.adapters.imTabs': 'IM アダプター',
   'settings.adapters.telegram': 'Telegram',
   'settings.adapters.feishu': 'Feishu',
@@ -1859,7 +1857,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.adapters.appSecret': 'App Secret',
   'settings.adapters.appSecretPlaceholder': 'Feishu 開放プラットフォームから取得',
   'settings.adapters.feishuCreateBotTitle': 'Feishu ボットが必要ですか？',
-  'settings.adapters.feishuCreateBotDesc': '必要な権限が設定済みの Feishu ボットを、ドキュメント記載の OpenClaw テンプレートで作成します。その後、下に App ID と App Secret を貼り付けてください。',
+  'settings.adapters.feishuCreateBotDesc': '必要な権限が設定済みの Feishu ボットを、Feishu 公式のボットテンプレートで作成します。その後、下に App ID と App Secret を貼り付けてください。',
   'settings.adapters.feishuCreateBotAction': 'Feishu ボットを作成',
   'settings.adapters.feishuCreateBotStepCreate': 'テンプレートからボットを作成します。',
   'settings.adapters.feishuCreateBotStepFill': 'その App ID と App Secret をコピーして、ここに入力します。',

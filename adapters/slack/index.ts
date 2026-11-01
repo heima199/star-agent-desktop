@@ -157,7 +157,7 @@ const port: ChatPort = {
     await api.uploadFile({
       channel: chatId,
       buffer: image.buffer,
-      filename: `claude-${Date.now()}.${imageExtensionForMime(image.mime)}`,
+      filename: `image-${Date.now()}.${imageExtensionForMime(image.mime)}`,
       title: image.alt,
       threadTs: replyThreads.get(chatId),
     })

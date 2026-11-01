@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import { getImAgentName } from '../common/brand.js'
 import { adapterMigrationLifecycle } from '../common/migration-lifecycle.js'
 import * as path from 'node:path'
 import {
@@ -60,7 +61,8 @@ export async function createWhatsAppSocket(options: {
     version,
     logger,
     printQRInTerminal: false,
-    browser: ['cc-haha', 'desktop', '1.0'],
+    // The name WhatsApp lists this link under (已关联设备 / Linked devices).
+    browser: [getImAgentName(), 'Desktop', '1.0'],
     syncFullHistory: false,
     markOnlineOnConnect: false,
   })

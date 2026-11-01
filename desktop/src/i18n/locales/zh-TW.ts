@@ -1842,9 +1842,7 @@ export const zh: Record<TranslationKey, string> = {
 
   // Settings > Adapters
   'settings.tab.adapters': 'IM 接入',
-  'settings.adapters.description': '配置即時通訊介面卡，透過 Telegram、飛書、微信、釘釘、WhatsApp、企業微信、QQ 或 Slack 與 {brandAgent} 對話。首次配置請參考',
-  'settings.adapters.configurationDocs': '文件地址',
-  'settings.adapters.descriptionAfterDocs': '。',
+  'settings.adapters.description': '配置即時通訊介面卡，透過 Telegram、飛書、微信、釘釘、WhatsApp、企業微信、QQ 或 Slack 與 {brandAgent} 對話。',
   'settings.adapters.imTabs': '即時通訊介面卡',
   'settings.adapters.telegram': 'Telegram',
   'settings.adapters.feishu': '飛書',
@@ -1858,7 +1856,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.adapters.appSecret': 'App Secret',
   'settings.adapters.appSecretPlaceholder': '從飛書開放平臺獲取',
   'settings.adapters.feishuCreateBotTitle': '還沒有飛書機器人？',
-  'settings.adapters.feishuCreateBotDesc': '使用文件中的官方 OpenClaw 模板，一鍵建立已預配許可權的飛書機器人。建立後把 App ID 和 App Secret 填到下方。',
+  'settings.adapters.feishuCreateBotDesc': '使用飛書官方的機器人模板，一鍵建立已預配許可權的飛書機器人。建立後把 App ID 和 App Secret 填到下方。',
   'settings.adapters.feishuCreateBotAction': '一鍵建立飛書機器人',
   'settings.adapters.feishuCreateBotStepCreate': '點選模板建立機器人。',
   'settings.adapters.feishuCreateBotStepFill': '複製 App ID 和 App Secret，回到這裡填寫。',

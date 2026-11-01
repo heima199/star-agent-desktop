@@ -164,7 +164,7 @@ const port: ChatPort = {
       console.warn('[WeCom] Outbound image rejected:', check.hint)
       return
     }
-    const filename = `claude-${Date.now()}.${imageExtensionForMime(image.mime)}`
+    const filename = `image-${Date.now()}.${imageExtensionForMime(image.mime)}`
     const uploaded = await client.uploadMedia(image.buffer, { type: 'image', filename })
     const mediaId = (uploaded as { media_id?: string })?.media_id
     if (!mediaId) throw new Error('Enterprise WeChat upload returned no media_id')

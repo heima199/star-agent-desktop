@@ -50,9 +50,17 @@ describe('loadSafeOutboundImage', () => {
     const root = makeTempRoot('outbound-root-')
     const outside = makeTempRoot('outbound-outside-')
     const secretPath = path.join(outside, 'secret.png')
-    const symlinkPath = path.join(root, 'escape.png')
     fs.writeFileSync(secretPath, Buffer.from('secret'))
-    fs.symlinkSync(secretPath, symlinkPath)
+    // A file symlink needs Developer Mode or admin rights on Windows (EPERM);
+    // there the escape is a directory junction, which any process can create.
+    let symlinkPath: string
+    if (process.platform === 'win32') {
+      fs.symlinkSync(outside, path.join(root, 'escape'), 'junction')
+      symlinkPath = path.join(root, 'escape', 'secret.png')
+    } else {
+      symlinkPath = path.join(root, 'escape.png')
+      fs.symlinkSync(secretPath, symlinkPath)
+    }
 
     const direct = await loadSafeOutboundImage({
       id: 'outside',
