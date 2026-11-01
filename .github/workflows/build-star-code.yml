@@ -204,8 +204,11 @@ jobs:
             const name = { 0xaa64: "arm64", 0x8664: "x64", 0x14c: "x86" }
             const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)])
             const files = walk(root).filter(f => /\.node$/i.test(f) || path.basename(f) === "STAR Code.exe")
-            const wrong = files.filter(f => machine(f) !== 0xaa64)
-            for (const f of files) console.log(name[machine(f)] || machine(f).toString(16), path.relative(root, f))
+            // @azure/msal-node-runtime ships only x64 and x86 Windows binaries; the Microsoft
+            // sign-in extension falls back without its broker when the module does not load
+            const allowed = f => /[\\/]extensions[\\/]microsoft-authentication[\\/]/.test(f)
+            const wrong = files.filter(f => machine(f) !== 0xaa64 && !allowed(f))
+            for (const f of files) console.log(name[machine(f)] || machine(f).toString(16), path.relative(root, f), allowed(f) && machine(f) !== 0xaa64 ? "(allowed)" : "")
             if (!files.length || wrong.length) { console.error(`${wrong.length} of ${files.length} binaries are not ARM64`); process.exit(1) }
           ' "$GITHUB_WORKSPACE/$STAR_PACKAGE_FOLDER"
 
