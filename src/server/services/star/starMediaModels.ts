@@ -16,11 +16,27 @@ const PREFERRED_IMAGE_MODELS = [
   'gpt-image-2.5',
 ]
 
-const VIDEO_MODE_ALIASES: Record<StarVideoType, string[]> = {
+const VIDEO_MODE_ALIASES: Record<Exclude<StarVideoType, 'ref2video'>, string[]> = {
   txt2video: ['text', 'txt', 'text2video', 'txt2video'],
   img2video: ['first_frame', 'image', 'img', 'img2video', 'image2video', 'reference', 'multi_image'],
   frames2video: ['first_last_frame', 'frames', 'frames2video', 'last_frame'],
-  ref2video: ['reference', 'video', 'reference_video', 'ref2video', 'video2video'],
+}
+
+/** Catalog modes that name a reference video outright. */
+const REFERENCE_VIDEO_MODES = ['reference_video', 'video', 'video2video', 'ref2video', 'multimodal']
+
+/**
+ * Model families the console's video service passes reference videos on to:
+ * MiniMax H3, Seedance 2 through meai (sd-2-*) and Seedance 2 official. Their
+ * catalog entry only says `reference`, which also means reference images, so
+ * that word alone let models that drop the video (Veo) take reference-video
+ * jobs, and as the cheapest they were picked first.
+ */
+const REFERENCE_VIDEO_FAMILIES = [/^minimax-h3/i, /^sd-2(?:-|$)/i, /seedance-2/i]
+
+export function acceptsReferenceVideo(model: StarVideoModel): boolean {
+  if (model.modes?.some(mode => REFERENCE_VIDEO_MODES.includes(mode.toLowerCase()))) return true
+  return REFERENCE_VIDEO_FAMILIES.some(family => family.test(model.id))
 }
 
 export const IMAGE_SIZE_RE = /^(\d{3,4}x\d{3,4}|auto)$/
@@ -94,6 +110,7 @@ export function pickImageModel(
 }
 
 export function supportsVideoType(model: StarVideoModel, type: StarVideoType): boolean {
+  if (type === 'ref2video') return acceptsReferenceVideo(model)
   if (!model.modes?.length) return true
   const aliases = VIDEO_MODE_ALIASES[type]
   return model.modes.some(mode => aliases.includes(mode.toLowerCase()))
@@ -120,6 +137,9 @@ export function pickVideoModel(
   const list = catalog?.video ?? []
   if (requested) return list.find(model => model.id === requested) ?? { id: requested, label: requested }
   const candidates = list.filter(model => supportsVideoType(model, type))
+  // A reference video sent to a model that drops it gives an unrelated clip:
+  // no stand-in for that one.
+  if (!candidates.length && type === 'ref2video') return undefined
   const seconds = duration ?? 5
   const ranked = [...(candidates.length ? candidates : list)].sort((a, b) => {
     const left = videoCost(a, seconds) ?? Number.POSITIVE_INFINITY

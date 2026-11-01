@@ -19,17 +19,34 @@ export const VIDEO_MODES: { value: VideoMode; label: string; hint: string }[] = 
 
 export const IMAGE_RATIOS = ['auto', '1:1', '3:4', '4:3', '9:16', '16:9', '2:3', '3:2', '21:9']
 
-const MODE_ALIASES: Record<VideoMode, string[]> = {
+const MODE_ALIASES: Record<Exclude<VideoMode, 'video2video'>, string[]> = {
   text2video: ['text', 'txt', 'text2video', 'txt2video'],
   image2video: ['first_frame', 'image', 'img', 'img2video', 'image2video', 'reference'],
   frames2video: ['first_last_frame', 'frames', 'frames2video', 'last_frame'],
   multi2video: ['reference', 'multi_image', 'image', 'img2video'],
-  video2video: ['reference', 'video', 'reference_video', 'ref2video', 'video2video'],
+}
+
+/** Catalog modes that name a reference video outright. */
+const REFERENCE_VIDEO_MODES = ['reference_video', 'video', 'video2video', 'ref2video', 'multimodal']
+
+/**
+ * Model families the console sends reference videos on to (its video
+ * service: MiniMax H3, Seedance 2 through meai and Seedance 2 official). Their
+ * catalog entry only says `reference`, which also means reference images: on
+ * that word alone, models that drop the video (Veo) were offered here and
+ * picked first as the cheapest, so the result ignored the reference.
+ */
+const REFERENCE_VIDEO_FAMILIES = [/^minimax-h3/i, /^sd-2(?:-|$)/i, /seedance-2/i]
+
+export function acceptsReferenceVideo(model: StarVideoModel): boolean {
+  if (model.modes?.some(item => REFERENCE_VIDEO_MODES.includes(item.toLowerCase()))) return true
+  return REFERENCE_VIDEO_FAMILIES.some(family => family.test(model.id))
 }
 
 const PREFERRED_IMAGE = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gpt-image-2', 'gpt-image-2.5']
 
 export function videoSupports(model: StarVideoModel, mode: VideoMode): boolean {
+  if (mode === 'video2video') return acceptsReferenceVideo(model)
   if (!model.modes?.length) return true
   return model.modes.some(item => MODE_ALIASES[mode].includes(item.toLowerCase()))
 }

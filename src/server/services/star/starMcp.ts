@@ -15,6 +15,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { getStarQuota, getStarStatus } from './starAccountService.js'
 import { readStarCatalog, refreshStarCatalog, type StarCatalog } from './starCatalog.js'
 import { getStarMediaTask, startStarImageTask, startStarVideoTask, waitForStarTask } from './starMediaService.js'
+import { acceptsReferenceVideo } from './starMediaModels.js'
 import type { StarMediaTask } from './starMediaStore.js'
 import { STAR_TOOLS, STAR_TOOL_GROUPS, type StarToolGroup } from './starMcpTools.js'
 import { formatStarCheckRun, runStarChecks } from './starSelfTest.js'
@@ -151,7 +152,7 @@ async function callTool(name: string, args: Args, context: StarMcpContext, progr
       if (!models.length) return '当前没有可用的视频模型。'
       return ['可用视频模型：', ...models.map(model => {
         const price = model.pricePerGeneration ? `每次 ${model.pricePerGeneration} 积分` : model.pricePerSecond ? `每秒 ${model.pricePerSecond} 积分` : '价格未标注'
-        return `- ${model.id}（${model.label}）：模式 ${model.modes?.join('/') ?? '全部'}；时长 ${model.durations?.join('/') ?? '默认'} 秒；比例 ${model.ratios?.join('/') ?? '默认'}；${price}`
+        return `- ${model.id}（${model.label}）：模式 ${model.modes?.join('/') ?? '全部'}；${acceptsReferenceVideo(model) ? '可用参考视频（star_video_to_video）' : '不接受参考视频'}；时长 ${model.durations?.join('/') ?? '默认'} 秒；比例 ${model.ratios?.join('/') ?? '默认'}；${price}`
       })].join('\n')
     }
     case 'star_web_search': {
