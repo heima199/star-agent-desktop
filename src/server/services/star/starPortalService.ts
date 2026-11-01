@@ -216,6 +216,19 @@ export function starHostArch(env: NodeJS.ProcessEnv = process.env, arch: string 
 }
 
 /**
+ * The console's update pointer picks one installer per platform and ignores
+ * the chip, so an Intel Mac is offered the Apple-chip dmg, which it cannot
+ * run. Every release publishes both macOS builds side by side
+ * (STAR-Agent-<version>-mac-x64.dmg next to -mac-arm64.dmg), so that one case
+ * is pointed at its sibling. Windows is left alone: the x64 installer also
+ * runs on ARM64 Windows.
+ */
+export function starInstallerForChip(downloadUrl: string, arch: string | null): string {
+  if (arch !== 'x64') return downloadUrl
+  return downloadUrl.replace(/(\/STAR-Agent-[^/?#]+-mac)-arm64(\.(?:dmg|zip))(?=$|[?#])/i, '$1-x64$2')
+}
+
+/**
  * The release published for this platform and chip. The console offers an
  * x64 machine only x64 (or untagged) installers, and an ARM machine the arm64
  * one, or the x64 one when no arm64 build was published.
@@ -224,13 +237,14 @@ export async function getStarUpdateInfo(platform: string, arch: string | null = 
   const query = new URLSearchParams({ platform })
   if (arch) query.set('arch', arch)
   const raw = rec(await starRequest('GET', `/desktop/update/latest?${query}`, { timeoutMs: 15_000 }))
+  const downloadUrl = text(raw.downloadUrl ?? raw.url, 2000) || null
   const published = raw.publishedAt
   const publishedAt = typeof published === 'number'
     ? (published > 0 ? (published < 1e12 ? published * 1000 : published) : null)
     : (typeof published === 'string' && Number.isFinite(Date.parse(published)) ? Date.parse(published) : null)
   return {
     version: text(raw.version, 40) || null,
-    downloadUrl: text(raw.downloadUrl ?? raw.url, 2000) || null,
+    downloadUrl: downloadUrl ? starInstallerForChip(downloadUrl, arch) : null,
     releaseNotes: text(raw.releaseNotes ?? raw.notes ?? raw.content, 20_000),
     mandatory: raw.mandatory === true,
     publishedAt,

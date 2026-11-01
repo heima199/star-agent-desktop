@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { handleStarApi } from '../api/star.js'
-import { starHostArch } from '../services/star/starPortalService.js'
+import { starHostArch, starInstallerForChip } from '../services/star/starPortalService.js'
 
 // 登录改为这种的: the login form links 用户协议 and 隐私政策. The desktop config
 // only lists their titles, so the bodies are read from the public
@@ -162,5 +162,15 @@ describe('GET /api/star/update', () => {
     expect(starHostArch({}, 'arm64')).toBe('arm64')
     expect(starHostArch({ CC_HAHA_HOST_ARCH: ' AARCH64 ' }, 'x64')).toBe('arm64')
     expect(starHostArch({}, 'ia32')).toBeNull()
+  })
+
+  // The console ignores the chip: an Intel Mac must not be sent the Apple-chip dmg.
+  it('points an Intel Mac at the x64 dmg and leaves every other installer alone', () => {
+    const base = 'https://apisaas.spkx.cn/downloads/star-agent/1.1.0/'
+    expect(starInstallerForChip(`${base}STAR-Agent-1.1.0-mac-arm64.dmg`, 'x64')).toBe(`${base}STAR-Agent-1.1.0-mac-x64.dmg`)
+    expect(starInstallerForChip(`${base}STAR-Agent-1.1.0-mac-arm64.dmg`, 'arm64')).toBe(`${base}STAR-Agent-1.1.0-mac-arm64.dmg`)
+    expect(starInstallerForChip(`${base}STAR-Agent-1.1.0-mac-arm64.dmg`, null)).toBe(`${base}STAR-Agent-1.1.0-mac-arm64.dmg`)
+    expect(starInstallerForChip(`${base}STAR-Agent-1.1.0-win-x64.exe`, 'arm64')).toBe(`${base}STAR-Agent-1.1.0-win-x64.exe`)
+    expect(starInstallerForChip('https://bo.spkx.cn/download', 'x64')).toBe('https://bo.spkx.cn/download')
   })
 })
