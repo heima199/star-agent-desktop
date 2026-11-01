@@ -188,8 +188,9 @@ export function StreamingIndicator() {
       >
         {/* 思考时这里也要一个logo: the STAR logo heads the line. When the turn
             starts it darts to the right and springs back, then turns for as
-            long as the turn runs (TURN_STATUS_STYLES; still under reduced
-            motion). The star's ink follows the theme, as everywhere else. */}
+            long as the turn runs (TURN_STATUS_STYLES; slower under reduced
+            motion, never still). The star's ink follows the theme, as
+            everywhere else. */}
         <span className="turn-status-logo" aria-hidden="true">
           <BrandSeal size="xs" />
         </span>
@@ -211,8 +212,13 @@ const STATUS_META_CLASS = 'shrink-0 whitespace-nowrap font-mono text-[11px] tabu
  * The verb reads as live through a light sweeping across it, and the logo
  * moves; neither moves the layout (transforms only). The logo darts 10px to
  * the right and snaps back past its place before settling (0.65 s, once per
- * turn line), and only then starts turning. Reduced motion keeps all of it
- * still and leaves the text in its plain secondary colour.
+ * turn line), and only then starts turning.
+ *
+ * Reduced motion drops the dart and slows the rest, but never stops it: this
+ * line is the only sign the turn is alive, and a frozen one reads as a hung
+ * app (the rule `.animate-spin` follows in globals.css). Windows reports
+ * reduced motion whenever its animation effects are off, so that is what many
+ * PCs see (思考中的时候那个加载特效也没有滚动).
  */
 const TURN_STATUS_STYLES = `
 @keyframes turn-status-sweep {
@@ -246,13 +252,13 @@ const TURN_STATUS_STYLES = `
 }
 @media (prefers-reduced-motion: reduce) {
   .turn-status-shimmer {
-    animation: none;
-    background: none;
-    color: var(--color-text-secondary);
+    animation-duration: 3.3s;
   }
-  .turn-status-logo,
-  .turn-status-logo > [data-testid="brand-seal"] {
+  .turn-status-logo {
     animation: none;
+  }
+  .turn-status-logo > [data-testid="brand-seal"] {
+    animation: turn-status-logo-turn 2.7s linear infinite;
   }
 }
 `

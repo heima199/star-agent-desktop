@@ -149,7 +149,14 @@ describe('StreamingIndicator', () => {
     expect(styles).toMatch(/\.turn-status-logo \{[^}]*animation: turn-status-logo-dart 0\.65s both;/)
     expect(styles).toMatch(/@keyframes turn-status-logo-dart \{[^@]*45% \{ transform: translateX\(10px\);[^@]*72% \{ transform: translateX\(-3px\);/)
     expect(styles).toMatch(/\.turn-status-logo > \[data-testid="brand-seal"\] \{[^}]*turn-status-logo-turn 1\.8s [^;]* 0\.65s infinite;/)
-    expect(styles).toMatch(/prefers-reduced-motion: reduce\)[\s\S]*\.turn-status-logo,[\s\S]*animation: none;/)
+    // 思考中的时候那个加载特效也没有滚动: reduced motion (what Windows reports
+    // whenever its animation effects are off) drops the dart and slows the
+    // turn and the sweep, but never stops them.
+    const reduced = styles.slice(styles.indexOf('@media (prefers-reduced-motion: reduce)'))
+    expect(reduced).toMatch(/\.turn-status-logo \{\s*animation: none;\s*\}/)
+    expect(reduced).toMatch(/\.turn-status-logo > \[data-testid="brand-seal"\] \{\s*animation: turn-status-logo-turn 2\.7s linear infinite;/)
+    expect(reduced).toMatch(/\.turn-status-shimmer \{\s*animation-duration: 3\.3s;\s*\}/)
+    expect(reduced).not.toMatch(/brand-seal"\][^{]*\{\s*animation: none/)
     expect(screen.getByText('Thinking...')).toHaveClass('turn-status-shimmer')
     // Elapsed time is a number that ticks: mono, tabular, tertiary.
     const elapsed = screen.getByText('12s')

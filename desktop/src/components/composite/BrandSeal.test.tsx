@@ -41,8 +41,10 @@ describe('BrandSeal', () => {
   })
 
   // 这里logo需放大，要那个动态svg: the sidebar and the home page show the
-  // rotating star; under reduced motion the browser takes the still frame.
-  it('rotates when animated, and stands still under reduced motion', () => {
+  // rotating star. logo也不动有些电脑: Windows reports reduced motion whenever
+  // its animation effects are off, so the mark no longer swaps in the still
+  // frame for it; it turns on every machine.
+  it('rotates when animated, whatever the motion setting', () => {
     expect(BRAND_LOGO_ROTATING_SRC.light).toMatch(/star-glass-black\.svg$/)
     expect(BRAND_LOGO_ROTATING_SRC.dark).toMatch(/star-glass-white\.svg$/)
     const { container } = render(<BrandSeal size="2xl" animated />)
@@ -51,23 +53,13 @@ describe('BrandSeal', () => {
     // The home page clips its hero at the top in a short window (the desktop
     // window can be 640px tall): there the mark drops to 56px and still fits.
     expect(mark).toHaveClass('[@media(max-height:680px)]:h-14', '[@media(max-height:680px)]:w-14')
-    const pictures = Array.from(mark.querySelectorAll('picture'))
-    expect(pictures).toHaveLength(2)
-    const inks = [
-      { rotating: BRAND_LOGO_ROTATING_SRC.light, still: BRAND_LOGO_SRC.light, shown: 'dark:hidden' },
-      { rotating: BRAND_LOGO_ROTATING_SRC.dark, still: BRAND_LOGO_SRC.dark, shown: 'dark:block' },
-    ]
-    pictures.forEach((picture, index) => {
-      const ink = inks[index]!
-      // display: contents, so the image is still the flex item that fills the mark.
-      expect(picture).toHaveClass('contents')
-      const source = picture.querySelector('source')!
-      expect(source).toHaveAttribute('media', '(prefers-reduced-motion: reduce)')
-      expect(source).toHaveAttribute('srcset', ink.still)
-      const image = picture.querySelector('img')!
-      expect(image).toHaveAttribute('src', ink.rotating)
-      expect(image).toHaveClass('h-full', 'w-full', 'object-contain', ink.shown)
-    })
+    expect(mark.querySelector('picture')).toBeNull()
+    expect(mark.querySelector('source')).toBeNull()
+    const images = Array.from(mark.querySelectorAll('img'))
+    expect(images.map(image => image.getAttribute('src'))).toEqual([BRAND_LOGO_ROTATING_SRC.light, BRAND_LOGO_ROTATING_SRC.dark])
+    expect(images[0]).toHaveClass('h-full', 'w-full', 'object-contain', 'dark:hidden')
+    expect(images[1]).toHaveClass('h-full', 'w-full', 'object-contain', 'hidden', 'dark:block')
+    expect(images.map(image => image.getAttribute('src'))).not.toContain(BRAND_LOGO_SRC.light)
   })
 
   it('cannot be dragged out of the chrome', () => {

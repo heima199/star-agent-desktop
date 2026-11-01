@@ -44,20 +44,6 @@ type LegalKind = 'terms' | 'privacy'
 const LEGAL_TITLE: Record<LegalKind, string> = { terms: '用户协议', privacy: '隐私政策' }
 type LegalDocs = { state: StarLegalDialogState; terms: StarLegalDocument | null; privacy: StarLegalDocument | null }
 
-const REDUCED_MOTION = '(prefers-reduced-motion: reduce)'
-
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia(REDUCED_MOTION).matches)
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const query = window.matchMedia(REDUCED_MOTION)
-    const onChange = () => setReduced(query.matches)
-    query.addEventListener?.('change', onChange)
-    return () => query.removeEventListener?.('change', onChange)
-  }, [])
-  return reduced
-}
-
 /** False while the window is minimized or hidden: the card stops drifting. */
 function usePageVisible(): boolean {
   const [visible, setVisible] = useState(() => document.visibilityState !== 'hidden')
@@ -117,9 +103,11 @@ const PILL_MUTED = 'cursor-default bg-[var(--color-surface-container-high)] text
 const DOC_BUTTON = `whitespace-nowrap rounded-[var(--radius-xs)] text-[var(--color-text-primary)] hover:underline hover:underline-offset-[3px] ${FOCUS_RING}`
 
 /**
- * The left half: the rotating glass star over drifting blobs; `animate` false =
- * the still star, paused blobs. Black on the paper themes, white on the dark
- * one, like BrandSeal.
+ * The left half: the rotating glass star over drifting blobs; `animate` false
+ * (window hidden) = the still star, paused blobs. Under reduced motion the
+ * blobs stop (starLogin.css) but the star keeps turning, as BrandSeal's does:
+ * Windows reports reduced motion whenever its animation effects are off.
+ * Black on the paper themes, white on the dark one, like BrandSeal.
  */
 function StarLogoCard({ animate }: { animate: boolean }) {
   const brand = useStarBrand()
@@ -168,7 +156,6 @@ export function StarLoginScreen({ status, onClose, onSignedIn }: StarLoginScreen
   const [openDoc, setOpenDoc] = useState<LegalKind | null>(null)
   const cooldown = useCooldown()
   const legal = useLegalDocs()
-  const reducedMotion = usePrefersReducedMotion()
   const pageVisible = usePageVisible()
   const accountRef = useRef<HTMLInputElement>(null)
   const codeRef = useRef<HTMLInputElement>(null)
@@ -314,7 +301,7 @@ export function StarLoginScreen({ status, onClose, onSignedIn }: StarLoginScreen
         <WindowControls />
       </div>
       <div className="star-login-body">
-        <StarLogoCard animate={pageVisible && !reducedMotion} />
+        <StarLogoCard animate={pageVisible} />
         <main className="star-login-main">
           <div className="star-login-column">
             <div className="star-login-brand">

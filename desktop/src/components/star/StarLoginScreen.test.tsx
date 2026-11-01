@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { starApi, type StarLegalDocument, type StarStatus } from '../../api/star'
-import { BRAND_LOGO_SRC } from '../composite/BrandSeal'
+import { BRAND_LOGO_ROTATING_SRC, BRAND_LOGO_SRC } from '../composite/BrandSeal'
 import { useProviderStore } from '../../stores/providerStore'
 import { useStarStore } from '../../stores/starStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -209,9 +209,25 @@ describe('StarLoginScreen', () => {
     expect(onClose).toHaveBeenCalledTimes(2)
   })
 
-  it('holds the card still under reduced motion', () => {
+  // logo也不动有些电脑: Windows reports reduced motion whenever its animation
+  // effects are off. The blobs stop for it (starLogin.css); the star turns.
+  it('keeps the star turning under reduced motion', () => {
     const original = window.matchMedia
     window.matchMedia = vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as never
+    try {
+      renderScreen()
+      const card = screen.getByTestId('star-login-card')
+      expect(card).toHaveAttribute('data-animate', 'true')
+      expect(card).not.toHaveClass('is-still')
+      expect(Array.from(card.querySelectorAll('img.star-login-logo')).map(image => image.getAttribute('src')))
+        .toEqual([BRAND_LOGO_ROTATING_SRC.light, BRAND_LOGO_ROTATING_SRC.dark])
+    } finally {
+      window.matchMedia = original
+    }
+  })
+
+  it('holds the card still while the window is hidden', () => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
     try {
       renderScreen()
       const card = screen.getByTestId('star-login-card')
@@ -221,7 +237,7 @@ describe('StarLoginScreen', () => {
       expect(Array.from(card.querySelectorAll('img.star-login-logo')).map(image => image.getAttribute('src')))
         .toEqual([BRAND_LOGO_SRC.light, BRAND_LOGO_SRC.dark])
     } finally {
-      window.matchMedia = original
+      visibility.mockRestore()
     }
   })
 

@@ -9,7 +9,13 @@ import { cx } from '@/lib/cx'
  * ground: black on the four paper themes, white on the dark one (the `dark:`
  * variant, see globals.css). CSS picks the ink, so a theme switch needs no
  * re-render. `animated` shows the rotating star (one turn in 12 s, animated
- * inside the SVG itself) and its still first frame under reduced motion.
+ * inside the SVG itself) on every machine.
+ *
+ * It used to show the still first frame under reduced motion. Windows reports
+ * reduced motion whenever its animation effects are off (the performance
+ * presets, remote desktop, many VMs), so on those PCs the mark never moved
+ * (logo也不动有些电脑). One slow turn of a small mark is not the motion that
+ * setting is for; larger decorative motion elsewhere still honours it.
  */
 export type BrandSealSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl'
 
@@ -30,31 +36,21 @@ export const BRAND_LOGO_SRC = { light: starGlassBlack, dark: starGlassWhite } as
 /** The rotating mark, in the same two inks. */
 export const BRAND_LOGO_ROTATING_SRC = { light: starGlassBlackRotating, dark: starGlassWhiteRotating } as const
 
-const REDUCED_MOTION = '(prefers-reduced-motion: reduce)'
-
 export type BrandSealProps = {
   size?: BrandSealSize
-  /** The rotating star; the still one when the system asks for reduced motion. */
+  /** The rotating star, whatever the system's motion setting. */
   animated?: boolean
   className?: string
 }
 
 function BrandSealInk({ ink, animated, className }: { ink: 'light' | 'dark'; animated: boolean; className: string }) {
-  const image = (
+  return (
     <img
       src={(animated ? BRAND_LOGO_ROTATING_SRC : BRAND_LOGO_SRC)[ink]}
       alt=""
       draggable={false}
       className={cx('h-full w-full object-contain', className)}
     />
-  )
-  if (!animated) return image
-  // The browser picks the source, and picks again when the motion setting changes.
-  return (
-    <picture className="contents">
-      <source media={REDUCED_MOTION} srcSet={BRAND_LOGO_SRC[ink]} />
-      {image}
-    </picture>
   )
 }
 
