@@ -13,9 +13,11 @@ import { randomUUID } from 'node:crypto'
 import { StarApiError, starRequest, starUploadForUrl } from './starClient.js'
 import { readStarCatalog, refreshStarCatalog, type StarCatalog } from './starCatalog.js'
 import { cropFrameToRatio } from './starFrameRatio.js'
+import { estimateStarImageCredits, estimateStarVideoCredits, type StarCreditEstimate } from './starMediaEstimate.js'
 import {
+  chargedImageTier,
   clampImageCount,
-  imageCost,
+  imageTierCost,
   IMAGE_SIZE_RE,
   normalizeTier,
   pickDuration,
@@ -26,7 +28,7 @@ import {
   pickVideoModel,
   acceptsReferenceVideo,
   REFERENCE_VIDEO_UNAVAILABLE,
-  videoCost,
+  videoCostAt,
   type StarVideoType,
 } from './starMediaModels.js'
 import { publishStarReference, publishStarReferences } from './starMediaRefs.js'
@@ -133,6 +135,15 @@ function newTask(kind: StarMediaKind, mode: StarMediaMode, model: string, prompt
   }
 }
 
+/** Replaces the offline estimate with the console's own once it answers (never blocks the job). */
+function refineEstimate(task: StarMediaTask, pending: Promise<StarCreditEstimate>): void {
+  void pending.then((estimate) => {
+    if (estimate.exact && estimate.credits !== undefined && estimate.credits !== task.estimatedCredits) {
+      updateStarTask(task, { estimatedCredits: estimate.credits })
+    }
+  }).catch(() => {})
+}
+
 function launch(task: StarMediaTask, run: () => Promise<void>): void {
   const job = run()
     .catch((error) => {
@@ -209,10 +220,12 @@ export async function startStarImageTask(input: StarImageInput, origin: StarTask
   const mode: StarMediaMode = references.length > 1 ? 'multi2image' : references.length === 1 ? 'image2image' : 'text2image'
   const task = newTask('image', mode, model.id, prompt, origin)
   task.params = { size, count, ...(input.ratio ? { ratio: input.ratio } : {}), ...(tier ? { resolution: tier } : {}) }
-  const estimate = imageCost(model, count)
-  if (estimate !== undefined) task.estimatedCredits = estimate
+  // Priced at the tier the console charges this size at, not at the base price.
+  const perImage = imageTierCost(model, chargedImageTier(size))
+  if (perImage !== undefined) task.estimatedCredits = perImage * count
   saveStarTask(task)
   updateStarTask(task, {})
+  refineEstimate(task, estimateStarImageCredits({ model: model.id, ratio: input.ratio, resolution: tier, count, edit: references.length > 0 }, catalog))
 
   launch(task, async () => {
     let refUrls: string[] = []
@@ -304,10 +317,12 @@ export async function startStarVideoTask(input: StarVideoInput, origin: StarTask
   const resolution = pickResolution(model, input.resolution)
   const task = newTask('video', mode, model.id, prompt, origin)
   task.params = { type, duration, ratio, resolution }
-  const estimate = videoCost(model, duration)
+  // Priced at the picked resolution and seconds, not at the flat base price.
+  const estimate = videoCostAt(model, duration, resolution)
   if (estimate !== undefined) task.estimatedCredits = estimate
   saveStarTask(task)
   updateStarTask(task, {})
+  refineEstimate(task, estimateStarVideoCredits({ model: model.id, type, duration, resolution }, catalog))
 
   launch(task, async () => {
     if (first || last || images.length || videos.length) {

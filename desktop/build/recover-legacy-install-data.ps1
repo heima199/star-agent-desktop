@@ -5,11 +5,12 @@ param(
   [string]$CandidateInstallDir = '',
   [string]$UserDataDir = '',
   [string]$RecoveryRoot = '',
-  [string]$ProcessName = 'STAR Agent.exe',
-  # Earlier builds shipped under another executable name and userData folder
-  # (see desktop/electron/services/userDataLocation.ts); both still count.
-  [string[]]$LegacyProcessNames = @('Claude Code Haha.exe'),
-  [string[]]$LegacyUserDataDirNames = @('claude-code-desktop', 'Claude Code Haha'),
+  [string]$ProcessName = 'PRIVO STAR WORK.exe',
+  # Earlier builds shipped under other executable names and userData folders
+  # (see desktop/electron/services/userDataLocation.ts); they all still count.
+  # "STAR Agent" is 1.0.0-1.1.x, before the rename to PRIVO STAR WORK.
+  [string[]]$LegacyProcessNames = @('STAR Agent.exe', 'Claude Code Haha.exe'),
+  [string[]]$LegacyUserDataDirNames = @('STAR Agent', 'claude-code-desktop', 'Claude Code Haha'),
   [string]$ActiveConfigDir = $env:CLAUDE_CONFIG_DIR,
   [string]$ActiveConfigManaged = $env:CC_HAHA_APP_PORTABLE_DIR,
   [ValidateSet('trusted-user', 'trusted-uac-outer', 'untrusted-elevated')]
@@ -418,7 +419,7 @@ function Get-UnsafeLegacySource {
       if (Test-PathMayBeDeleted -InstallDir $installDir -Candidate $active) {
         $activeInsideInstall = $true
         if ($ActiveConfigManaged -ne '1') {
-          throw "Active CLAUDE_CONFIG_DIR is managed outside STAR Agent and points inside an application install directory. Move or remove that environment variable before upgrading: $active"
+          throw "Active CLAUDE_CONFIG_DIR is managed outside PRIVO STAR WORK and points inside an application install directory. Move or remove that environment variable before upgrading: $active"
         }
         if (Test-SamePath -Left $installDir -Right $active) {
           throw "The active data directory is the application install root itself: $active"
@@ -930,7 +931,7 @@ function Run-SelfTest {
         -RecoveryRoot (Join-Path $testRoot 'unmanaged recovery') -ProcessName $ProcessName `
         -ActiveConfigDir $managedLegacy -ActiveConfigManaged '' -SkipProcessCheck | Out-Null
     } catch {
-      $unmanagedFailed = $_.Exception.Message.Contains('managed outside STAR Agent')
+      $unmanagedFailed = $_.Exception.Message.Contains('managed outside PRIVO STAR WORK')
     }
     Assert-SelfTest -Condition $unmanagedFailed -Message 'unsafe external CLAUDE_CONFIG_DIR did not fail closed'
 
@@ -1174,7 +1175,7 @@ function Run-SelfTest {
     Assert-SelfTest -Condition $junctionFailed -Message 'install-contained junction source was silently skipped'
 
     $renamedAppData = Join-Path $testRoot 'renamed appdata'
-    $currentUserData = Join-Path $renamedAppData 'STAR Agent'
+    $currentUserData = Join-Path $renamedAppData 'PRIVO STAR WORK'
     $packageNameUserData = Join-Path $renamedAppData 'claude-code-desktop'
     $productNameUserData = Join-Path $renamedAppData 'Claude Code Haha'
     $legacyNames = @('claude-code-desktop', 'Claude Code Haha')
@@ -1195,6 +1196,20 @@ function Run-SelfTest {
     Assert-SelfTest `
       -Condition ((Resolve-UserDataDir -UserDataDir $currentUserData -LegacyNames $legacyNames) -eq $currentUserData) `
       -Message 'a current userData folder in use was not preferred over legacy folders'
+
+    # Upgrade from 1.1.x: only the "STAR Agent" folder exists, and the default list tries it first.
+    $upgradeAppData = Join-Path $testRoot 'upgrade appdata'
+    $upgradeCurrent = Join-Path $upgradeAppData 'PRIVO STAR WORK'
+    $upgradePrevious = Join-Path $upgradeAppData 'STAR Agent'
+    New-Item -ItemType Directory -Path $upgradeAppData -Force | Out-Null
+    Write-TestMode -Dir $upgradePrevious -Value @{ mode = 'default'; portable_dir = $null }
+    Write-TestMode -Dir (Join-Path $upgradeAppData 'claude-code-desktop') -Value @{ mode = 'default'; portable_dir = $null }
+    Assert-SelfTest `
+      -Condition ((Resolve-UserDataDir -UserDataDir $upgradeCurrent -LegacyNames $LegacyUserDataDirNames) -eq $upgradePrevious) `
+      -Message 'the 1.1.x "STAR Agent" userData folder was not found before older legacy folders'
+    Assert-SelfTest `
+      -Condition ($LegacyProcessNames -contains 'STAR Agent.exe') `
+      -Message 'the 1.1.x executable name is not in the legacy process list'
 
     [Console]::Out.WriteLine('Legacy install data recovery self-test passed.')
   } finally {

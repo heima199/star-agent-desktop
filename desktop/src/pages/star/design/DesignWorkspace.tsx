@@ -68,12 +68,20 @@ export function DesignWorkspace({ projectId, initialPrompt, onBack }: { projectI
   // next message (and any approval it asks for) never reach this column.
   useLayoutEffect(() => (sessionId ? showEmbeddedSession(sessionId) : undefined), [sessionId])
 
+  const onBackRef = useRef(onBack)
+  onBackRef.current = onBack
   const load = useCallback(async () => {
     try {
       const { project: next } = await starApi.designProject(projectId)
       setProject(current => (current && JSON.stringify(current) === JSON.stringify(next) ? current : next))
       return next
     } catch (error) {
+      // A project reopened after a reload may have been deleted since: back to
+      // the Design home instead of spinning on "打开设计项目…".
+      if (error instanceof ApiError && error.status === 404) {
+        onBackRef.current()
+        return null
+      }
       toast('error', starErrorText(error))
       return null
     }

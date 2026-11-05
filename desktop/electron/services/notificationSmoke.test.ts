@@ -53,7 +53,7 @@ describe('Electron notification smoke hook', () => {
       writeLog: vi.fn(),
     })).toBe(true)
 
-    expect(NotificationClass).toHaveBeenCalledWith(expect.objectContaining({ title: 'STAR Agent notification smoke' }))
+    expect(NotificationClass).toHaveBeenCalledWith(expect.objectContaining({ title: 'PRIVO STAR WORK notification smoke' }))
   })
 
   it('schedules a targeted notification for Computer Use smoke validation', () => {

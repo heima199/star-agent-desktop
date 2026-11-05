@@ -61,6 +61,8 @@ export type Tab = {
   returnTabId?: string
   /** STAR page id of a 'star-page' tab. */
   pageId?: string
+  /** What a 'star-page' tab shows, saved with the tab so a reload reopens it (Design: the open project). */
+  pageParams?: Record<string, string>
   /** Address a 'star-web' tab starts from; its page navigates on its own after that. */
   webUrl?: string
   /** A 'star-web' tab opened without a name takes its page's title. */
@@ -73,6 +75,28 @@ type PersistedTab = {
   // Typed as string: old builds also persisted the retired 'trace'/'traces'.
   type?: string
   traceSessionId?: string
+  /** Only on the STAR page tabs in PERSISTENT_STAR_PAGE_IDS. */
+  pageParams?: unknown
+}
+
+/**
+ * STAR pages whose tab survives a reload. Design holds an open project (chat on
+ * the left, canvas on the right); dropping its tab on reload lost the canvas
+ * and left only the project's chat, as a plain session tab.
+ */
+const PERSISTENT_STAR_PAGE_IDS: ReadonlySet<string> = new Set(['design'])
+
+function isPersistentStarPageTab(tab: { sessionId: string }): boolean {
+  return tab.sessionId.startsWith(STAR_PAGE_TAB_PREFIX) &&
+    PERSISTENT_STAR_PAGE_IDS.has(tab.sessionId.slice(STAR_PAGE_TAB_PREFIX.length))
+}
+
+/** Keeps string values only: the params come back from localStorage. */
+function sanitizePageParams(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
+  return entries.length ? Object.fromEntries(entries) : undefined
 }
 
 export type ClosedSessionTab = {
@@ -127,6 +151,8 @@ type TabStore = {
   /** Deleted sessions have nothing left to reopen, now or when their tab closes later. */
   markSessionsDeleted: (sessionIds: string[]) => void
 
+  /** Records what a 'star-page' tab shows (undefined: its home), so a reload reopens it. */
+  setTabPageParams: (tabId: string, params: Record<string, string> | undefined) => void
   saveTabs: () => void
   restoreTabs: () => Promise<void>
 }
@@ -174,6 +200,7 @@ function normalizeLegacyActiveTabId(activeTabId: string | null | undefined): str
 
 function getPersistedSessionId(tab: PersistedTab): string | null {
   if (getPersistentSpecialTabType(tab)) return null
+  if (tab.type === 'star-page' || tab.sessionId.startsWith(STAR_PAGE_TAB_PREFIX)) return null
   if (
     tab.type === 'terminal' || tab.type === 'workbench' || tab.type === 'subagent' ||
     tab.type === 'team' || tab.type === 'team-member'
@@ -472,6 +499,22 @@ export const useTabStore = create<TabStore>((set, get) => ({
     set({ closedSessionTabs: closedSessionTabs.filter((tab) => !deletedSessionIds.has(tab.sessionId)) })
   },
 
+  setTabPageParams: (tabId, params) => {
+    const { tabs } = get()
+    const tab = tabs.find((current) => current.sessionId === tabId)
+    if (!tab || tab.type !== 'star-page') return
+    const next = sanitizePageParams(params)
+    if (JSON.stringify(next ?? null) === JSON.stringify(tab.pageParams ?? null)) return
+    set({
+      tabs: tabs.map((current) => {
+        if (current.sessionId !== tabId) return current
+        const { pageParams: _previous, ...rest } = current
+        return next ? { ...rest, pageParams: next } : rest
+      }),
+    })
+    get().saveTabs()
+  },
+
   saveTabs: () => {
     const { tabs, activeTabId } = get()
     const persistableTabs = tabs.filter((tab) => (
@@ -483,7 +526,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
       tab.type !== 'star-studio' &&
       tab.type !== 'star-library' &&
       tab.type !== 'star-phone' &&
-      tab.type !== 'star-page' &&
+      (tab.type !== 'star-page' || isPersistentStarPageTab(tab)) &&
       tab.type !== 'star-web' &&
       // Desktop settings are a modal, so a settings tab is never worth restoring there.
       !(tab.type === 'settings' && isDesktopRuntime())
@@ -508,6 +551,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
         sessionId: t.sessionId,
         title: t.title,
         type: t.type,
+        ...(t.type === 'star-page' && t.pageParams ? { pageParams: t.pageParams } : {}),
       })),
       activeTabId: persistedActiveTabId,
     }
@@ -598,13 +642,25 @@ export const useTabStore = create<TabStore>((set, get) => ({
           if (getPersistentSpecialTabType(t) === 'settings' && isDesktopRuntime()) return false
           // Special tabs are always valid
           if (getPersistentSpecialTabType(t)) return true
+          if (isPersistentStarPageTab(t)) return true
           const sessionId = getPersistedSessionId(t)
           return sessionId !== null && sessionsById.has(sessionId)
         })
-        .map((t) => {
+        .map((t): Tab => {
           const specialType = getPersistentSpecialTabType(t)
           if (specialType) {
             return { sessionId: PERSISTENT_SPECIAL_TAB_IDS[specialType], title: t.title, type: specialType, status: 'idle' as const }
+          }
+          if (isPersistentStarPageTab(t)) {
+            const pageParams = sanitizePageParams(t.pageParams)
+            return {
+              sessionId: t.sessionId,
+              title: t.title,
+              type: 'star-page',
+              status: 'idle',
+              pageId: t.sessionId.slice(STAR_PAGE_TAB_PREFIX.length),
+              ...(pageParams ? { pageParams } : {}),
+            }
           }
           return {
             sessionId: t.sessionId,

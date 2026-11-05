@@ -26,14 +26,15 @@ describe('brand placeholders in translations', () => {
 
   it('shows STAR until the console name arrives', () => {
     expect(translate('en', 'ideLaunch.title')).toBe('Open this project in STAR Code')
-    expect(translate('zh', 'settings.mcp.scopeDesc.user')).toBe('写入你的全局 STAR Agent 配置，对所有项目生效。')
+    // No console name yet: "STAR WORK", never "STAR STAR WORK"
+    expect(translate('zh', 'settings.mcp.scopeDesc.user')).toBe('写入你的全局 STAR WORK 配置，对所有项目生效。')
     expect(translate('zh', 'settings.about.community')).toBe('加入 STAR 交流群')
   })
 
   it('fills the console name into every brand placeholder', () => {
     useStarBrandStore.getState().setName('PRIVO')
     expect(translate('zh', 'ideLaunch.title')).toBe('在 PRIVO Code 中打开当前项目')
-    expect(translate('en', 'empty.subtitle')).toContain('PRIVO Agent is ready')
+    expect(translate('en', 'empty.subtitle')).toContain('PRIVO STAR WORK is ready')
     expect(translate('zh', 'model.signInStar')).toBe('登录 PRIVO 使用模型')
     expect(translate('kr', 'settings.providers.ccSwitch.unavailableSchema')).not.toMatch(/\{brand/)
   })

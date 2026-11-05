@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
-import { applyHostArchEnv, applyWindowsAppUserModelId, applyWindowsTaskbarIdentity, HOST_ARCH_ENV, PRODUCT_NAME, resolveWindowsWindowIcon, WINDOWS_APP_USER_MODEL_ID } from './appIdentity'
+import { applyHostArchEnv, applyWindowsAppUserModelId, applyWindowsTaskbarIdentity, HOST_ARCH_ENV, LEGACY_PRODUCT_NAMES, PRODUCT_NAME, resolveWindowsWindowIcon, WINDOWS_APP_USER_MODEL_ID } from './appIdentity'
 
 describe('applyWindowsAppUserModelId', () => {
   it('sets the AppUserModelID on Windows so toast notifications are attributed to the app', () => {
@@ -30,21 +30,38 @@ describe('applyWindowsAppUserModelId', () => {
   })
 })
 
-describe('STAR Agent product identity', () => {
+describe('PRIVO STAR WORK product identity', () => {
   const packageJsonPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json')
   const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
     productName?: string
     description?: string
-    build?: { productName?: string, artifactName?: string, publish?: unknown, nsis?: { guid?: string } }
+    build?: {
+      appId?: string
+      productName?: string
+      artifactName?: string
+      publish?: unknown
+      nsis?: { guid?: string }
+      protocols?: { schemes?: string[] }[]
+    }
   }
 
-  it('names the app STAR Agent for Electron at runtime and for electron-builder', () => {
+  it('names the app PRIVO STAR WORK for Electron at runtime and for electron-builder', () => {
     // Electron reads the top-level productName (build.productName is never seen at
     // runtime), and app.name decides the userData folder and the macOS app menu.
-    expect(PRODUCT_NAME).toBe('STAR Agent')
+    expect(PRODUCT_NAME).toBe('PRIVO STAR WORK')
     expect(pkg.productName).toBe(PRODUCT_NAME)
     expect(pkg.build?.productName).toBe(PRODUCT_NAME)
-    expect(pkg.build?.artifactName).toBe('STAR-Agent-${version}-${os}-${arch}.${ext}')
+    // No spaces in file names: the console and download links use them as-is.
+    expect(pkg.build?.artifactName).toBe('PRIVO-STAR-WORK-${version}-${os}-${arch}.${ext}')
+  })
+
+  it('keeps the identifiers an upgrade from STAR Agent relies on', () => {
+    // Taskbar pins and notifications are attributed to the appId, STAR Code opens
+    // the app through star-agent://, and the NSIS guid (checked below) makes the
+    // new installer replace the old install.
+    expect(pkg.build?.appId).toBe('cn.spkx.staragent')
+    expect(pkg.build?.protocols?.[0]?.schemes).toEqual(['star-agent'])
+    expect(LEGACY_PRODUCT_NAMES[0]).toBe('STAR Agent')
   })
 
   it('never ships the former product name in package metadata', () => {
@@ -109,7 +126,7 @@ describe('Windows window and pinned taskbar identity', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'electron-app-identity-'))
     const desktopRoot = path.join(root, 'resources', 'app.asar')
     const resourcesPath = path.join(root, 'resources')
-    const executablePath = path.join(root, 'STAR Agent.exe')
+    const executablePath = path.join(root, 'PRIVO STAR WORK.exe')
     const externalIcon = path.join(resourcesPath, 'app-icon.ico')
     const bundledIcon = path.join(desktopRoot, 'src-tauri', 'icons', 'icon.ico')
     const write = (file: string) => {
@@ -132,7 +149,7 @@ describe('Windows window and pinned taskbar identity', () => {
         appIconPath: f.externalIcon,
         appIconIndex: 0,
         relaunchCommand: `"${f.executablePath}"`,
-        relaunchDisplayName: 'STAR Agent',
+        relaunchDisplayName: 'PRIVO STAR WORK',
       })
     } finally {
       rmSync(f.root, { recursive: true, force: true })

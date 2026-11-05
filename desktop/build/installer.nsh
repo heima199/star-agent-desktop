@@ -4,9 +4,12 @@
 !define /ifndef INSTALL_REGISTRY_KEY "Software\${APP_GUID}"
 !define /ifndef UNINSTALL_REGISTRY_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}"
 ; Electron's userData folder under %APPDATA%, named after package.json productName.
-; Builds from before the rename used "claude-code-desktop" (or the former product
-; name); the app adopts such a folder on its first start, so both are checked too.
-!define /ifndef STAR_AGENT_USER_DATA_DIR_NAME "STAR Agent"
+; Earlier builds used "STAR Agent" (1.0.0-1.1.x), "claude-code-desktop" or the
+; former product name; the app adopts such a folder on its first start, so all
+; of them are checked too.
+!define /ifndef STAR_AGENT_USER_DATA_DIR_NAME "PRIVO STAR WORK"
+!define /ifndef STAR_AGENT_PREVIOUS_USER_DATA_DIR_NAME "STAR Agent"
+!define /ifndef STAR_AGENT_PREVIOUS_EXE_NAME "STAR Agent.exe"
 !define /ifndef STAR_AGENT_LEGACY_EXE_NAME "Claude Code Haha.exe"
 Var pid
 Var ccHahaProcessDiagnostic
@@ -173,6 +176,10 @@ Function CcHahaCanSkipLegacyRecovery
 
   IfFileExists "$ccHahaPerUserInstallLocation\CLAUDE_CONFIG_DIR\*.*" cc_haha_skip_recovery_done 0
   Push "$R1\${STAR_AGENT_USER_DATA_DIR_NAME}\app-mode.json"
+  Call CcHahaModeFileIsDefault
+  Pop $R2
+  StrCmp $R2 "1" 0 cc_haha_skip_recovery_done
+  Push "$R1\${STAR_AGENT_PREVIOUS_USER_DATA_DIR_NAME}\app-mode.json"
   Call CcHahaModeFileIsDefault
   Pop $R2
   StrCmp $R2 "1" 0 cc_haha_skip_recovery_done
@@ -349,7 +356,7 @@ FunctionEnd
       StrCpy $ccHahaProcessDiagnostic "PowerShell unavailable and tasklist process enumeration failed (exit code ${_RETURN}); blocking setup."
       StrCpy ${_RETURN} 0
     ${Else}
-      nsExec::Exec '"$SYSDIR\findstr.exe" /I /L /C:"${_FILE}" /C:"${STAR_AGENT_LEGACY_EXE_NAME}" /C:"claude-sidecar-x86_64-pc-windows-msvc.exe" /C:"claude-sidecar-aarch64-pc-windows-msvc.exe" /C:"claude-sidecar.exe" /C:"OpenConsole.exe" /C:"winpty-agent.exe" /C:"rg.exe" "$PLUGINSDIR\cc-haha-processes.csv"'
+      nsExec::Exec '"$SYSDIR\findstr.exe" /I /L /C:"${_FILE}" /C:"${STAR_AGENT_PREVIOUS_EXE_NAME}" /C:"${STAR_AGENT_LEGACY_EXE_NAME}" /C:"claude-sidecar-x86_64-pc-windows-msvc.exe" /C:"claude-sidecar-aarch64-pc-windows-msvc.exe" /C:"claude-sidecar.exe" /C:"OpenConsole.exe" /C:"winpty-agent.exe" /C:"rg.exe" "$PLUGINSDIR\cc-haha-processes.csv"'
       Pop ${_RETURN}
       ${If} ${_RETURN} == 0
         StrCpy $ccHahaProcessDiagnostic "PowerShell unavailable; the main app, a known sidecar, or a bundled terminal/search helper is running with an unknown path. Close it manually."

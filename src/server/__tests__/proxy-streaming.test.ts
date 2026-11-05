@@ -754,3 +754,37 @@ test('Chat SSE policy errors stop without a successful completion', async () => 
     type: 'error', error: { type: 'permission_error', code: 'cyber_policy', message: 'Request denied' },
   } }])
 })
+
+// Reported 2026-11-05: Stop pressed while a DeepSeek (OpenAI Chat) model was
+// still streaming reasoning left the upstream running for another minute; the
+// trace showed the call completing normally. Reasoning chunks, unlike content,
+// produce no Anthropic text, so this proves the cancel reaches the upstream
+// while only reasoning has been forwarded.
+describe('cancelling an OpenAI Chat stream during reasoning', () => {
+  test('closes the upstream while only reasoning_content has arrived', async () => {
+    let upstreamCancelled = false
+    const encoder = new TextEncoder()
+    const upstream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await Bun.sleep(20)
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          id: 'chatcmpl-r', object: 'chat.completion.chunk', created: 1, model: 'deepseek-flash',
+          choices: [{ index: 0, delta: { reasoning_content: 'thinking step. ' }, finish_reason: null }],
+        })}\n\n`))
+      },
+      cancel() {
+        upstreamCancelled = true
+      },
+    })
+    const out = openaiChatStreamToAnthropic(upstream, 'deepseek-flash')
+    const reader = out.getReader()
+    let thinkingDeltas = 0
+    while (thinkingDeltas < 3) {
+      const { value, done } = await reader.read()
+      if (done) throw new Error('the reasoning stream ended by itself')
+      thinkingDeltas += (new TextDecoder().decode(value).match(/thinking_delta/g) ?? []).length
+    }
+    await reader.cancel('user stopped generation')
+    expect(upstreamCancelled).toBe(true)
+  })
+})

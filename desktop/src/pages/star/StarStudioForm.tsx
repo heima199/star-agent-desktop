@@ -4,7 +4,7 @@ import { Button } from '../../components/ui/Button'
 import { TextArea } from '../../components/ui/TextArea'
 import { useUIStore } from '../../stores/uiStore'
 import { formatStarCredits, useStarStore } from '../../stores/starStore'
-import { starApi, starErrorText } from '../../api/star'
+import { starApi, starErrorText, type StarImageModel, type StarVideoModel } from '../../api/star'
 import { takeStarStudioPrefill } from '../../components/star/starTabs'
 import { pokeStarTasks } from '../../components/star/useStarSync'
 import {
@@ -16,14 +16,17 @@ import {
   imageModelsFor,
   imageRatioIgnored,
   nearest,
+  imageTierCost,
+  imageTierNote,
   REFERENCE_VIDEO_PAUSED,
   referenceVideoAvailable,
   VIDEO_MODES,
-  videoCost,
+  videoCostAt,
   videoModelsFor,
   type ImageMode,
   type VideoMode,
 } from './starStudioModels'
+import { useStarCreditEstimate } from './useStarCreditEstimate'
 
 type Ref = { id: string; name: string; kind: 'image' | 'video'; preview: string | null; url?: string; status: 'uploading' | 'ready' | 'error'; error?: string }
 
@@ -160,9 +163,17 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
   const effectiveDuration = durations.includes(duration) ? duration : nearest(durations, duration)
   const effectiveRatio = ratios.includes(videoRatio) ? videoRatio : ratios[0]!
   const effectiveResolution = resolutions.includes(videoResolution) ? videoResolution : resolutions[0]!
-  const estimate = kind === 'image'
-    ? (chosenImage?.pricePerImage !== undefined ? chosenImage.pricePerImage * count : undefined)
-    : videoCost(chosenVideo, effectiveDuration)
+  // The console's price for exactly these picks; its rule stands in until it answers.
+  const exact = useStarCreditEstimate(catalog
+    ? kind === 'image'
+      ? { kind: 'image', model: model || undefined, ratio: ratio === 'auto' ? undefined : ratio, resolution, count, edit: imageMode !== 'text2image' }
+      : { kind: 'video', model: model || undefined, mode: videoMode, duration: effectiveDuration, resolution: effectiveResolution }
+    : null)
+  const localEstimate = kind === 'image'
+    ? (() => { const one = imageTierCost(chosenImage, resolution); return one !== undefined ? one * count : undefined })()
+    : videoCostAt(chosenVideo, effectiveDuration, effectiveResolution)
+  const estimate = exact?.credits ?? localEstimate
+  const tierNote = kind === 'image' ? imageTierNote(resolution, exact?.tier, ratio) : null
 
   useEffect(() => setModel(''), [kind, imageMode, videoMode])
 
@@ -298,9 +309,11 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
         >
           <option value="">自动选择（{autoName}）</option>
           {modelList.map(item => {
-            const price = kind === 'image'
-              ? ('pricePerImage' in item && item.pricePerImage !== undefined ? ` · ${item.pricePerImage} 积分/张` : '')
-              : (videoCost(item as never, effectiveDuration) !== undefined ? ` · 约 ${videoCost(item as never, effectiveDuration)} 积分` : '')
+            // Priced at the picked 清晰度, or 分辨率 and 时长, like the job itself.
+            const cost = kind === 'image'
+              ? imageTierCost(item as StarImageModel, resolution)
+              : videoCostAt(item as StarVideoModel, effectiveDuration, effectiveResolution)
+            const price = cost === undefined ? '' : kind === 'image' ? ` · ${cost} 积分/张` : ` · 约 ${cost} 积分`
             return <option key={item.id} value={item.id}>{item.label}{price}</option>
           })}
         </select>
@@ -317,6 +330,7 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
             <div>
               <Label>清晰度</Label>
               <div className="flex gap-1.5">{(['1k', '2k', '4k'] as const).map(item => <button key={item} type="button" className={chip(resolution === item)} onClick={() => setResolution(item)}>{item.toUpperCase()}</button>)}</div>
+              {tierNote ? <div className="mt-1.5 text-[12px] leading-5 text-[var(--color-warning)]">{tierNote}</div> : null}
             </div>
             <div>
               <Label>张数</Label>

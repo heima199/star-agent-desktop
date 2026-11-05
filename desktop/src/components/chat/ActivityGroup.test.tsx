@@ -219,7 +219,9 @@ describe('ActivityGroup', () => {
       />,
     )
 
-    expect(screen.getByText(t('toolGroup.failedCount', { count: 1 }))).toBeTruthy()
+    // The failure is a red mark with an accessible name; the header never prints "1 failed".
+    expect(screen.getByRole('img', { name: t('toolGroup.failedCount', { count: 1 }) })).toBeTruthy()
+    expect(screen.queryByText(t('toolGroup.failedCount', { count: 1 }))).toBeNull()
   })
 
   it('shows a step stopped while awaiting approval as stopped, not as a failure', () => {
@@ -246,7 +248,7 @@ describe('ActivityGroup', () => {
       />,
     )
 
-    expect(screen.queryByText(t('toolGroup.failedCount', { count: 1 }))).toBeNull()
+    expect(screen.queryByTestId('activity-failed-mark')).toBeNull()
     const stoppedRow = screen.getAllByText(t('tool.stopped'))
     expect(stoppedRow.length).toBeGreaterThan(0)
   })

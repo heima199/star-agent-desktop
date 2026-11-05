@@ -1,6 +1,6 @@
 import { SessionScheduleMark } from '@/components/tasks/SessionScheduleMark'
 import { forwardRef, useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { Bell, Check, ChevronRight, Clock, Ellipsis, Folder, FolderOpen, FolderPlus, GitBranch, ListChecks, Pin, PinOff, RefreshCw, RotateCcw, Search, SquarePen, X } from 'lucide-react'
+import { Bell, Check, ChevronRight, Clock, Ellipsis, Folder, FolderOpen, FolderPlus, GitBranch, ListChecks, PanelLeft, Pin, PinOff, RefreshCw, RotateCcw, Search, SquarePen, X } from 'lucide-react'
 import { StarAccountDock, StarCheckinBanner, useStarCheckinBannerVisible } from '../star/StarAccountDock'
 import { StarModeSwitch } from '../star/StarModeSwitch'
 import { StarSidebarNav } from '../star/StarSidebarNav'
@@ -1064,7 +1064,8 @@ export function Sidebar({
               aria-label={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
               title={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
             >
-              <SidebarToggleIcon collapsed={!expanded} />
+              {/* Panel glyph, the same one the tab bar shows to reopen the sidebar. */}
+              <PanelLeft size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -2206,24 +2207,5 @@ function NavItem({
         <kbd className={`${KBD_CLASS} opacity-0 transition-opacity group-hover/nav:opacity-100 group-focus-visible/nav:opacity-100`}>{shortcut}</kbd>
       ) : null}
     </button>
-  )
-}
-
-
-function SidebarToggleIcon({ collapsed }: { collapsed: boolean }) {
-  return (
-    <svg
-      width={collapsed ? 16 : 14}
-      height={collapsed ? 16 : 14}
-      viewBox="0 0 14 14"
-      fill="none"
-      className={`sidebar-toggle-icon ${collapsed ? 'sidebar-toggle-icon--collapsed' : 'sidebar-toggle-icon--open'}`}
-      aria-hidden="true"
-    >
-      <path
-        d={collapsed ? 'M5 3 9 7l-4 4' : 'M9 3 5 7l4 4'}
-        className="sidebar-toggle-chevron"
-      />
-    </svg>
   )
 }

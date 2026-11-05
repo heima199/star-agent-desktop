@@ -4,14 +4,18 @@ import { PRODUCT_NAME } from './appIdentity'
 
 /**
  * Folder names earlier builds used for Electron's userData (window state,
- * app-mode.json, Local Storage, preferences). Electron names that folder after
- * package.json's top-level `productName`, falling back to `name`. Before the
- * rename the product name only lived under `build`, which Electron never reads,
- * so packaged builds actually used the package name. The former product name is
- * what the installer and electron-builder's uninstaller assumed, so it is
- * checked as well.
+ * app-mode.json, Local Storage, preferences), in the order they are tried.
+ * Electron names that folder after package.json's top-level `productName`,
+ * falling back to `name`.
+ * - "STAR Agent": 1.0.0–1.1.x, before the rename to PRIVO STAR WORK (1.2.0).
+ *   Every current user has this one, so it comes first.
+ * - "claude-code-desktop": before productName moved to the top level of
+ *   package.json it only lived under `build`, which Electron never reads, so
+ *   packaged builds used the package name.
+ * - "Claude Code Haha": the former product name, which the installer and
+ *   electron-builder's uninstaller assumed.
  */
-export const LEGACY_USER_DATA_DIR_NAMES = ['claude-code-desktop', 'Claude Code Haha'] as const
+export const LEGACY_USER_DATA_DIR_NAMES = ['STAR Agent', 'claude-code-desktop', 'Claude Code Haha'] as const
 
 /** `unknown`: it exists but could not be inspected (permissions, I/O error). */
 export type UserDataDirState = 'missing' | 'empty' | 'populated' | 'unknown'

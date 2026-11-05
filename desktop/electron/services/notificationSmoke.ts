@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { PRODUCT_NAME } from './appIdentity'
 import {
   sendDesktopNotification,
   type ElectronNotificationConstructor,
@@ -98,7 +99,7 @@ export function scheduleNotificationSmoke({
   const sessionId = env.CC_HAHA_ELECTRON_NOTIFICATION_SMOKE_SESSION_ID?.trim()
   if (!sessionId) return false
 
-  const title = env.CC_HAHA_ELECTRON_NOTIFICATION_SMOKE_TITLE?.trim() || 'STAR Agent notification smoke'
+  const title = env.CC_HAHA_ELECTRON_NOTIFICATION_SMOKE_TITLE?.trim() || `${PRODUCT_NAME} notification smoke`
   const body = env.CC_HAHA_ELECTRON_NOTIFICATION_SMOKE_BODY?.trim() || 'Click to return to the target session.'
   const delayMs = parseNotificationSmokeDelay(env.CC_HAHA_ELECTRON_NOTIFICATION_SMOKE_DELAY_MS)
   const triggerSyntheticAction = shouldTriggerSyntheticAction(env.CC_HAHA_ELECTRON_NOTIFICATION_SMOKE_TRIGGER_ACTION)

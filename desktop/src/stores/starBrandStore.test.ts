@@ -28,10 +28,14 @@ describe('STAR brand name', () => {
   })
 
   it('names the products without doubling', () => {
-    expect(starBrandProductName('PRIVO', 'Agent')).toBe('PRIVO Agent')
-    expect(starBrandProductName('PRIVO agent', 'Agent')).toBe('PRIVO agent')
-    expect(starBrandParams('PRIVO')).toEqual({ brand: 'PRIVO', brandAgent: 'PRIVO Agent', brandCode: 'PRIVO Code' })
-    expect(formatStarBrand('使用 {brandAgent} 的登录 · {0}', 'PRIVO')).toBe('使用 PRIVO Agent 的登录 · {0}')
+    // The desktop app is "X STAR WORK" since 1.2.0; the IDE stays "X Code"
+    expect(starBrandProductName('PRIVO', 'Agent')).toBe('PRIVO STAR WORK')
+    expect(starBrandProductName('PRIVO star work', 'Agent')).toBe('PRIVO star work')
+    expect(starBrandProductName('STAR', 'Agent')).toBe('STAR WORK')
+    expect(starBrandProductName('PRIVO STAR', 'Agent')).toBe('PRIVO STAR WORK')
+    expect(starBrandProductName('PRIVO Code', 'Code')).toBe('PRIVO Code')
+    expect(starBrandParams('PRIVO')).toEqual({ brand: 'PRIVO', brandAgent: 'PRIVO STAR WORK', brandCode: 'PRIVO Code' })
+    expect(formatStarBrand('使用 {brandAgent} 的登录 · {0}', 'PRIVO')).toBe('使用 PRIVO STAR WORK 的登录 · {0}')
   })
 
   it('starts as STAR and keeps only normalized names', () => {

@@ -38,15 +38,26 @@ describe('Electron brand name', () => {
   })
 
   it('names the tray product and the window', () => {
-    expect(brandAgentName('PRIVO')).toBe('PRIVO Agent')
-    expect(brandAgentName('PRIVO Agent')).toBe('PRIVO Agent')
+    expect(brandAgentName('PRIVO')).toBe('PRIVO STAR WORK')
+    expect(brandAgentName('PRIVO STAR WORK')).toBe('PRIVO STAR WORK')
     expect(brandWindowTitle('PRIVO')).toBe('PRIVO')
     expect(brandWindowTitle(' ')).toBe('STAR')
   })
 
+  it('never repeats words the console name already ends with', () => {
+    // No name set in the console: "STAR WORK", not "STAR STAR WORK"
+    expect(brandAgentName('STAR')).toBe('STAR WORK')
+    expect(brandAgentName(' ')).toBe('STAR WORK')
+    expect(brandAgentName('PRIVO STAR')).toBe('PRIVO STAR WORK')
+    expect(brandAgentName('privo star work')).toBe('privo star work')
+    // "STAR" inside a word is not an overlap
+    expect(brandAgentName('SUPERSTAR')).toBe('SUPERSTAR STAR WORK')
+  })
+
   it('renames the brand word in notification texts, not identifiers', () => {
     expect(brandNotificationText('STAR 需要你的确认', 'PRIVO')).toBe('PRIVO 需要你的确认')
-    expect(brandNotificationText('{brandAgent} 已完成回复', 'PRIVO')).toBe('PRIVO Agent 已完成回复')
+    expect(brandNotificationText('{brandAgent} 已完成回复', 'PRIVO')).toBe('PRIVO STAR WORK 已完成回复')
+    expect(brandNotificationText('{brandCode} 已打开', 'PRIVO')).toBe('PRIVO Code 已打开')
     expect(brandNotificationText('STAR-DEBUG STAR_X star', 'PRIVO')).toBe('STAR-DEBUG STAR_X star')
     expect(brandNotificationText('STAR 通知已启用', 'STAR')).toBe('STAR 通知已启用')
   })

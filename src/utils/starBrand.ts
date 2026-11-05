@@ -8,7 +8,8 @@
  * Same rules as STAR Code's common/starBrand.ts: control characters and angle
  * brackets become spaces, runs of spaces collapse, at most 24 characters; an
  * empty name or the console's unset default "MaxClaw" is STAR. Product names
- * are "X Agent" / "X Code", without doubling a name that already ends so.
+ * are "X STAR WORK" (the desktop app, "X Agent" before 1.2.0) / "X Code",
+ * without repeating words the name already ends with.
  */
 
 import { readFileSync } from 'node:fs'
@@ -34,10 +35,31 @@ export function normalizeStarBrandName(raw: unknown): string {
 
 export type StarBrandProduct = 'Agent' | 'Code'
 
-/** "X Agent" / "X Code"; a name that already ends with the word stays as it is. */
+/**
+ * The words after the console's name. The desktop app is "X STAR WORK" since
+ * 1.2.0 (it was "X Agent"); the IDE stays "X Code". Same table as the desktop's
+ * src/lib/starBrand.ts.
+ */
+const PRODUCT_SUFFIX: { [p in StarBrandProduct]: string } = { Agent: 'STAR WORK', Code: 'Code' }
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * "X STAR WORK" / "X Code". Words the name already ends with are not repeated:
+ * "PRIVO STAR WORK" stays as it is, and the default name "STAR" (or "PRIVO STAR")
+ * only gets " WORK", never "STAR STAR WORK".
+ */
 export function starBrandProductName(brand: string, product: StarBrandProduct): string {
   const name = brand.trim() || STAR_BRAND_DEFAULT
-  return new RegExp(`(^|\\s)${product}$`, 'i').test(name) ? name : `${name} ${product}`
+  const suffixWords = PRODUCT_SUFFIX[product].split(' ')
+  for (let take = suffixWords.length; take > 0; take--) {
+    const lead = suffixWords.slice(0, take).join(' ')
+    if (new RegExp(`(^|\\s)${escapeRegExp(lead)}$`, 'i').test(name)) {
+      const rest = suffixWords.slice(take).join(' ')
+      return rest ? `${name} ${rest}` : name
+    }
+  }
+  return `${name} ${suffixWords.join(' ')}`
 }
 
 /** `{brand}` → X, `{brandAgent}` → X Agent, `{brandCode}` → X Code; other braces stay. */
@@ -86,7 +108,7 @@ export function getStarBrandName(): string {
   return name
 }
 
-/** "X Agent", the name the agent introduces itself with. */
+/** "X STAR WORK", the name the agent introduces itself with. */
 export function getStarAgentName(): string {
   return starBrandProductName(getStarBrandName(), 'Agent')
 }

@@ -2386,6 +2386,16 @@ describe('Sidebar', () => {
 
   // TRAE: collapsed, the panel goes away entirely (zero width, hidden by CSS);
   // the tab bar takes over the expand toggle and search while it is closed.
+  // The toggle was a bare "<" chevron; it is the panel glyph, the same one the
+  // tab bar uses to reopen the sidebar.
+  it('draws the collapse toggle as the panel glyph, not a chevron', () => {
+    render(<Sidebar />)
+
+    const toggle = screen.getByTestId('sidebar-collapse-button')
+    expect(toggle.querySelector('svg.lucide-panel-left')).not.toBeNull()
+    expect(toggle.querySelector('.sidebar-toggle-chevron')).toBeNull()
+  })
+
   it('collapses out of the way and expands back', async () => {
     render(<Sidebar />)
 

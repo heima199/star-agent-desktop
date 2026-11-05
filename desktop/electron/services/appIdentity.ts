@@ -13,7 +13,13 @@ export const WINDOWS_APP_USER_MODEL_ID = 'cn.spkx.staragent'
 
 // Must stay in sync with productName in desktop/package.json: the name the OS shows
 // for this app (executable, shortcuts, tray, taskbar pin, macOS app menu).
-export const PRODUCT_NAME = 'STAR Agent'
+// Renamed from "STAR Agent" in 1.2.0. The appId above, the NSIS guid and the
+// star-agent:// protocol keep their old values so an upgrade replaces the old
+// install and STAR Code still finds the app.
+export const PRODUCT_NAME = 'PRIVO STAR WORK'
+
+/** Product names of earlier releases, newest first (user data folders, install folders, executables). */
+export const LEGACY_PRODUCT_NAMES = ['STAR Agent', 'Claude Code Haha'] as const
 
 /**
  * The machine's chip, for the local server: it names it to the STAR console

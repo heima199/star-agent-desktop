@@ -654,7 +654,7 @@ describe('Electron sidecar manager', () => {
     expect(thrown).toBeInstanceOf(Error)
     expect((thrown as Error).message).toContain(`Electron sidecar could not be executed (${code})`)
     expect((thrown as Error).message).toContain(plan.command)
-    expect((thrown as Error).message).toContain('Reinstall STAR Agent with the full installer')
+    expect((thrown as Error).message).toContain('Reinstall PRIVO STAR WORK with the full installer')
     expect((thrown as Error).message).not.toMatch(/claude code haha/i)
     expect((thrown as Error).cause).toBe(badExe)
     expect(formatStartupError((thrown as Error).message, [])).not.toContain('timeout')

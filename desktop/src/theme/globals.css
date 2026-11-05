@@ -2193,35 +2193,6 @@ body.sidebar-resizing * {
 .sidebar-toggle-button--collapsed:active {
 }
 
-.sidebar-toggle-icon {
-  overflow: visible;
-}
-
-.sidebar-toggle-chevron {
-  stroke: currentColor;
-  transition:
-    opacity 180ms ease,
-    transform 180ms ease;
-  vector-effect: non-scaling-stroke;
-}
-
-.sidebar-toggle-chevron {
-  opacity: 0.95;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.85;
-  transform-origin: 50% 50%;
-}
-
-.sidebar-toggle-icon--open .sidebar-toggle-chevron {
-  transform: translateX(-0.2px);
-}
-
-.sidebar-toggle-button--collapsed .sidebar-toggle-chevron {
-  stroke-width: 2;
-  transform: translateX(0.4px);
-}
-
 .sidebar-copy {
   overflow: hidden;
   white-space: nowrap;

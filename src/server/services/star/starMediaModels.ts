@@ -205,6 +205,58 @@ export function imageCost(model: StarImageModel | undefined, count: number): num
   return model?.pricePerImage !== undefined && model.pricePerImage > 0 ? model.pricePerImage * count : undefined
 }
 
+/**
+ * The tier the console charges a WIDTHxHEIGHT at. It reads the size, not the
+ * tier the job names: `auto` or a size it cannot parse is charged as 1k.
+ */
+export function chargedImageTier(size: string): '1k' | '2k' | '4k' {
+  const parsed = parseSize(size)
+  return parsed ? sizeTier(parsed[0], parsed[1]) : '1k'
+}
+
+/**
+ * The console's 2K / 4K multipliers. The catalog carries one base price per
+ * image and puts the multipliers in the badge ("2K×2 4K×4"); without one the
+ * console's defaults (2 and 4) apply.
+ */
+function imageTierMultiplier(model: StarImageModel, tier: '1k' | '2k' | '4k'): number {
+  if (tier === '1k') return 1
+  const match = new RegExp(`${tier.toUpperCase()}\\s*[×x*]\\s*(\\d+(?:\\.\\d+)?)`, 'i').exec(model.badge ?? '')
+  const listed = match ? Number(match[1]) : Number.NaN
+  return Number.isFinite(listed) && listed > 0 ? listed : tier === '4k' ? 4 : 2
+}
+
+/** Credits for one image at `tier`, by the console's rule (rounded up, at least 1). */
+export function imageTierCost(model: StarImageModel | undefined, tier: '1k' | '2k' | '4k'): number | undefined {
+  if (!model?.pricePerImage || model.pricePerImage <= 0) return undefined
+  return Math.max(1, Math.ceil(model.pricePerImage * imageTierMultiplier(model, tier)))
+}
+
+/**
+ * Credits for one video by the console's rule with its default settings
+ * (1080P / 2K ×1.5, 4K ×3; a per-generation price covers 5 s and each second
+ * past that adds 20%; a per-second price is multiplied by the seconds). The
+ * console can be set differently, so this is the offline fallback; the
+ * console's own estimate (`/video/credits`) is preferred.
+ */
+export function videoCostAt(model: StarVideoModel | undefined, duration: number, resolution?: string): number | undefined {
+  if (!model) return undefined
+  const value = (resolution ?? '').toLowerCase()
+  const resolutionFactor = /4k|2160/.test(value) ? 3 : /1080|2k|1440/.test(value) ? 1.5 : 1
+  const seconds = Math.max(1, duration || 5)
+  let credits: number | undefined
+  if (model.pricePerGeneration && model.pricePerGeneration > 0) {
+    credits = Math.max(1, Math.ceil(model.pricePerGeneration * resolutionFactor * (1 + Math.max(0, seconds - 5) * 0.2)))
+  } else if (model.pricePerSecond && model.pricePerSecond > 0) {
+    credits = Math.max(1, Math.ceil(model.pricePerSecond * resolutionFactor * seconds))
+  }
+  // MiniMax H3 runs to 30 s; the console bills 16-30 s at twice the price.
+  if (credits !== undefined && H3_MODEL_RE.test(model.id) && seconds >= 16) credits = Math.ceil(credits * 2)
+  return credits
+}
+
+const H3_MODEL_RE = /minimax-h3|hailuo-0?3/i
+
 export function pickVideoModel(
   catalog: StarCatalog | null,
   requested: string | undefined,

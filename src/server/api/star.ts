@@ -13,6 +13,7 @@
  *   POST   /api/star/checkin | /redeem | /feedback
  *   GET    /api/star/media/tasks             task center
  *   POST   /api/star/media/image | /video    start a job
+ *   POST   /api/star/media/estimate          credits a job would cost (by tier / resolution / seconds)
  *   GET    /api/star/media/tasks/:id         one job
  *   DELETE /api/star/media/tasks/:id         ?files=1 also deletes downloaded files
  *   GET    /api/star/media/tasks/:id/file/:n downloaded output bytes
@@ -65,6 +66,8 @@ import {
   startStarImageTask,
   startStarVideoTask,
 } from '../services/star/starMediaService.js'
+import { estimateStarImageCredits, estimateStarVideoCredits } from '../services/star/starMediaEstimate.js'
+import type { StarVideoType } from '../services/star/starMediaModels.js'
 import {
   markStarPromptUsed,
   StarPromptError,
@@ -150,11 +153,44 @@ const MIME_BY_EXT: Record<string, string> = {
   '.webm': 'video/webm',
 }
 
+/** The desktop's video mode → the job type the server picks a model for. */
+function videoTypeOf(mode: string | undefined): StarVideoType {
+  switch (mode) {
+    case 'image2video':
+    case 'multi2video':
+      return 'img2video'
+    case 'frames2video':
+      return 'frames2video'
+    case 'video2video':
+      return 'ref2video'
+    default:
+      return 'txt2video'
+  }
+}
+
 async function handleMedia(req: Request, url: URL, segments: string[]): Promise<Response> {
   const sub = segments[3]
   if (sub === 'tasks' && !segments[4] && req.method === 'GET') {
     const limit = Math.min(300, Math.max(1, int(url.searchParams.get('limit')) ?? 100))
     return Response.json({ tasks: listStarMediaTasks(limit), running: runningStarTaskCount() })
+  }
+  if (sub === 'estimate' && req.method === 'POST') {
+    const body = await readBody(req)
+    const estimate = body.kind === 'video'
+      ? await estimateStarVideoCredits({
+          model: str(body.model, 200),
+          type: videoTypeOf(str(body.mode, 20)),
+          duration: int(body.duration),
+          resolution: str(body.resolution, 20),
+        })
+      : await estimateStarImageCredits({
+          model: str(body.model, 200),
+          ratio: str(body.ratio, 20),
+          resolution: str(body.resolution, 10),
+          count: int(body.count),
+          edit: body.edit === true,
+        })
+    return Response.json({ estimate })
   }
   if ((sub === 'image' || sub === 'video') && req.method === 'POST') {
     const body = await readBody(req)

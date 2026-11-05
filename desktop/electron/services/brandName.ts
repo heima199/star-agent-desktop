@@ -34,7 +34,7 @@ export function readBrandName(file: string, read: (file: string) => string = nam
   }
 }
 
-/** "X Agent": the tray tooltip and its 显示 / 退出 entries. */
+/** "X STAR WORK" (was "X Agent" before 1.2.0): the tray tooltip and its 显示 / 退出 entries. */
 export function brandAgentName(brand: string): string {
   return starBrandProductName(brand, 'Agent')
 }
@@ -53,8 +53,10 @@ const BRAND_WORD = /(?<![A-Za-z0-9_\-./])STAR(?![A-Za-z0-9_-])/g
  */
 export function brandNotificationText(text: string, brand: string): string {
   const name = brandWindowTitle(brand)
-  const formatted = formatStarBrand(text, name)
-  return name === STAR_BRAND_DEFAULT ? formatted : formatted.replace(BRAND_WORD, name)
+  // Swap the bare brand word first: the product names put in afterwards
+  // ("X STAR WORK") contain STAR themselves and must stay as they are.
+  const renamed = name === STAR_BRAND_DEFAULT ? text : text.replace(BRAND_WORD, name)
+  return formatStarBrand(renamed, name)
 }
 
 export type BrandNameSource = {

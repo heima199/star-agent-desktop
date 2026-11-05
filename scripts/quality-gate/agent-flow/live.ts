@@ -527,7 +527,14 @@ export async function executeAgentFlowAgainstProvider(
     // not quietly cleaned up.
     const mutations = sandbox.detectUserStateMutations()
     sandbox.cleanup()
-    rmSync(workRoot, { recursive: true, force: true })
+    // On Windows a file in the work root can stay locked for a while after the
+    // run (EBUSY, e.g. an antivirus scan of files just written). Its results are
+    // already in, so a temp folder that will not go away is reported, not fatal.
+    try {
+      rmSync(workRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
+    } catch (error) {
+      console.warn(`[${options.label}] could not remove ${workRoot}: ${error instanceof Error ? error.message : String(error)}`)
+    }
     if (mutations.length > 0) {
       throw new Error(`${options.label} mutated real user state:\n  ${mutations.join('\n  ')}`)
     }

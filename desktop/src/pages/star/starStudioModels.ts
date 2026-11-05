@@ -77,11 +77,61 @@ export function videoSupports(model: StarVideoModel, mode: VideoMode): boolean {
   return model.modes.some(item => MODE_ALIASES[mode].includes(item.toLowerCase()))
 }
 
+/** The catalog's base price: used to rank models for 自动, not to show what a job costs. */
 export function videoCost(model: StarVideoModel | undefined, duration: number): number | undefined {
   if (!model) return undefined
   if (model.pricePerGeneration && model.pricePerGeneration > 0) return model.pricePerGeneration
   if (model.pricePerSecond && model.pricePerSecond > 0) return Math.round(model.pricePerSecond * duration * 100) / 100
   return undefined
+}
+
+/*
+ * What the console charges, by its rule with its default settings (the same
+ * rule as the server's starMediaModels). The catalog has one base price per
+ * model, while the console charges an image by the tier of its size and a
+ * video by resolution and seconds, so showing the base price read "1 积分" at
+ * 4K and "10 积分" at 2K / 12 s (2026-11-05). The job's own estimate comes
+ * from the console (starApi.estimateCredits); this prices the model list and
+ * stands in until that answers.
+ */
+function imageTierMultiplier(model: StarImageModel, tier: '1k' | '2k' | '4k'): number {
+  if (tier === '1k') return 1
+  const match = new RegExp(`${tier.toUpperCase()}\\s*[×x*]\\s*(\\d+(?:\\.\\d+)?)`, 'i').exec(model.badge ?? '')
+  const listed = match ? Number(match[1]) : Number.NaN
+  return Number.isFinite(listed) && listed > 0 ? listed : tier === '4k' ? 4 : 2
+}
+
+/** Credits for one image at `tier`. */
+export function imageTierCost(model: StarImageModel | undefined, tier: '1k' | '2k' | '4k'): number | undefined {
+  if (!model?.pricePerImage || model.pricePerImage <= 0) return undefined
+  return Math.max(1, Math.ceil(model.pricePerImage * imageTierMultiplier(model, tier)))
+}
+
+/** Credits for one video at `duration` seconds and `resolution`. */
+export function videoCostAt(model: StarVideoModel | undefined, duration: number, resolution?: string): number | undefined {
+  if (!model) return undefined
+  const value = (resolution ?? '').toLowerCase()
+  const resolutionFactor = /4k|2160/.test(value) ? 3 : /1080|2k|1440/.test(value) ? 1.5 : 1
+  const seconds = Math.max(1, duration || 5)
+  let credits: number | undefined
+  if (model.pricePerGeneration && model.pricePerGeneration > 0) {
+    credits = Math.max(1, Math.ceil(model.pricePerGeneration * resolutionFactor * (1 + Math.max(0, seconds - 5) * 0.2)))
+  } else if (model.pricePerSecond && model.pricePerSecond > 0) {
+    credits = Math.max(1, Math.ceil(model.pricePerSecond * resolutionFactor * seconds))
+  }
+  // MiniMax H3 runs to 30 s; the console bills 16-30 s at twice the price.
+  if (credits !== undefined && H3_MODEL_RE.test(model.id) && seconds >= 16) credits = Math.ceil(credits * 2)
+  return credits
+}
+
+const H3_MODEL_RE = /minimax-h3|hailuo-0?3/i
+
+/** Note shown when the model draws no larger than `charged` though `asked` is picked. */
+export function imageTierNote(asked: '1k' | '2k' | '4k', charged: '1k' | '2k' | '4k' | undefined, ratio: string | undefined): string | null {
+  if (!charged || charged === asked) return null
+  return !ratio || ratio === 'auto'
+    ? `比例为「自动」时按 ${charged.toUpperCase()} 出图和计费；要 ${asked.toUpperCase()} 请选一个比例`
+    : `这个模型最高出 ${charged.toUpperCase()}，按 ${charged.toUpperCase()} 计费`
 }
 
 export function imageModelsFor(catalog: StarCatalog | null, mode: ImageMode): StarImageModel[] {

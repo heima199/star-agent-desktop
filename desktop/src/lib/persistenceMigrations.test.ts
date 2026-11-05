@@ -52,6 +52,29 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)).toBe(String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
   })
 
+  // Startup migration runs on every launch; it used to rewrite every unknown tab
+  // to a 'session', so a saved Design tab would be looked up as a chat and dropped.
+  test('keeps the saved Design tab and its project through repeated startup migrations', () => {
+    window.localStorage.setItem('cc-haha-open-tabs', JSON.stringify({
+      openTabs: [
+        { sessionId: 'session-1', title: 'Task', type: 'session' },
+        { sessionId: '__star_page__design', title: 'Design', type: 'star-page', pageParams: { project: 'proj-1', junk: 7 } },
+      ],
+      activeTabId: '__star_page__design',
+    }))
+    const expected = {
+      openTabs: [
+        { sessionId: 'session-1', title: 'Task', type: 'session' },
+        { sessionId: '__star_page__design', title: 'Design', type: 'star-page', pageParams: { project: 'proj-1' } },
+      ],
+      activeTabId: '__star_page__design',
+    }
+    runDesktopPersistenceMigrations()
+    expect(JSON.parse(window.localStorage.getItem('cc-haha-open-tabs')!)).toEqual(expected)
+    runDesktopPersistenceMigrations()
+    expect(JSON.parse(window.localStorage.getItem('cc-haha-open-tabs')!)).toEqual(expected)
+  })
+
   test.each([undefined, 'session', 'connectors'])('preserves connector identities from legacy startup fixtures with type %s', (type) => {
     window.localStorage.setItem('cc-haha-open-tabs', JSON.stringify({
       openTabs: [

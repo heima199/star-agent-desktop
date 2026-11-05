@@ -32,13 +32,16 @@ import {
   IMAGE_RATIOS,
   imageModelsFor,
   imageRatioIgnored,
+  imageTierCost,
+  imageTierNote,
   nearest,
   referenceVideoAvailable,
-  videoCost,
+  videoCostAt,
   videoModelsFor,
   type ImageMode,
   type VideoMode,
 } from '../../pages/star/starStudioModels'
+import { useStarCreditEstimate } from '../../pages/star/useStarCreditEstimate'
 
 export const STAR_CREATE_ICONS: Record<StarCreateMode, LucideIcon> = {
   text2image: Wand2,
@@ -157,9 +160,23 @@ function SettingsPanel({ slot, mode, params, onClose }: { slot: string; mode: St
   const durations = pickedVideo?.durations?.length ? pickedVideo.durations : [5, 10]
   const videoRatios = pickedVideo?.ratios?.length ? pickedVideo.ratios : VIDEO_RATIOS_FALLBACK
   const count = params.count ?? 1
-  const cost = spec.kind === 'image'
-    ? (pickedImage?.pricePerImage !== undefined ? pickedImage.pricePerImage * count : undefined)
-    : spec.kind === 'video' ? videoCost(pickedVideo, nearest(durations, duration)) : undefined
+  const tier = params.resolution === '2k' || params.resolution === '4k' ? params.resolution : '1k'
+  const seconds = nearest(durations, duration)
+  // The job runs at the model's first listed resolution (this panel has no picker).
+  const videoResolution = pickedVideo?.resolutions?.[0]
+  // The console's price for exactly these picks; its rule stands in until it answers.
+  const exact = useStarCreditEstimate(
+    spec.kind === 'image'
+      ? { kind: 'image', model: params.model, ratio: params.ratio && params.ratio !== 'auto' ? params.ratio : undefined, resolution: tier, count, edit: mode !== 'text2image' }
+      : spec.kind === 'video'
+        ? { kind: 'video', model: params.model, mode, duration: seconds, ...(videoResolution ? { resolution: videoResolution } : {}) }
+        : null,
+  )
+  const localCost = spec.kind === 'image'
+    ? (() => { const one = imageTierCost(pickedImage, tier); return one !== undefined ? one * count : undefined })()
+    : spec.kind === 'video' ? videoCostAt(pickedVideo, seconds, videoResolution) : undefined
+  const cost = spec.kind === 'vision' ? undefined : exact?.credits ?? localCost
+  const tierNote = spec.kind === 'image' ? imageTierNote(tier, exact?.tier, params.ratio) : null
 
   const models = spec.kind === 'image' ? imageModels : videoModels
   const modelOptions = [
@@ -210,6 +227,7 @@ function SettingsPanel({ slot, mode, params, onClose }: { slot: string; mode: St
                 <button key={value ?? 'default'} type="button" className={`${CHIP} ${params.resolution === value ? CHIP_ON : CHIP_OFF}`} onClick={() => update({ resolution: value })}>{value ?? '标准'}</button>
               ))}
             </Row>
+            {tierNote ? <p className="-mt-1.5 text-[11px] leading-4 text-[var(--color-warning)]">{tierNote}</p> : null}
           </>
         ) : null}
         {spec.kind === 'video' ? (

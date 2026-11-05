@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { PRODUCT_NAME } from './appIdentity'
 import { areStorageWritesFrozen } from './storageMaintenance'
 import {
   constants as fsConstants,
@@ -771,7 +772,7 @@ export function spawnSidecar(plan: SidecarPlan, deps: SpawnSidecarDeps = {}): Si
     const code = (error as NodeJS.ErrnoException | null)?.code
     if (typeof code !== 'string' || !UNEXECUTABLE_SIDECAR_ERROR_CODES.has(code)) throw error
     throw new Error(
-      `Electron sidecar could not be executed (${code}): ${plan.command}. The file may be damaged, incomplete, or blocked by security software. Reinstall STAR Agent with the full installer, and allow its install directory in your security software if this keeps happening.`,
+      `Electron sidecar could not be executed (${code}): ${plan.command}. The file may be damaged, incomplete, or blocked by security software. Reinstall ${PRODUCT_NAME} with the full installer, and allow its install directory in your security software if this keeps happening.`,
       { cause: error },
     )
   }

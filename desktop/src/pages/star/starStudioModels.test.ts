@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { StarCatalog, StarVideoModel } from '../../api/star'
-import { acceptsReferenceVideo, autoImageModel, autoVideoModel, imageRatioIgnored, referenceVideoAvailable, videoModelsFor } from './starStudioModels'
+import { acceptsReferenceVideo, autoImageModel, autoVideoModel, imageRatioIgnored, imageTierCost, imageTierNote, referenceVideoAvailable, videoCostAt, videoModelsFor } from './starStudioModels'
 
 /** The video models of the production catalog (2026-11-01), as the desktop config lists them. */
 const VIDEO: StarVideoModel[] = [
@@ -70,5 +70,34 @@ describe('视频参考 models', () => {
   it('leaves the other modes as they were', () => {
     expect(videoModelsFor(CATALOG, 'multi2video').map(model => model.id)).toEqual(['sd-2-fast', 'MiniMax-H3', 'videoretalk', 'veo3.1-fast'])
     expect(autoVideoModel(CATALOG, 'image2video', 5)?.id).toBe('veo3.1-fast')
+  })
+})
+
+// The creation page showed the catalog's base price for every pick: "约 1 积分"
+// at 4K and "约 10 积分" at 2K / 12 s (2026-11-05). The console charges an
+// image by its tier and a video by resolution and seconds.
+describe('prices follow 清晰度, 分辨率 and 时长', () => {
+  it('an image costs more at 2K and 4K, by the badge multipliers when it lists them', () => {
+    const plain = { id: 'gemini-2.5-flash-image', label: 'Gemini', pricePerImage: 1 }
+    expect([imageTierCost(plain, '1k'), imageTierCost(plain, '2k'), imageTierCost(plain, '4k')]).toEqual([1, 2, 4])
+    const badged = { id: 'gpt-image-2.5', label: 'GPT', pricePerImage: 5, badge: '2K×1.5 4K×3' }
+    expect([imageTierCost(badged, '2k'), imageTierCost(badged, '4k')]).toEqual([8, 15])
+  })
+
+  it('a video costs more for longer and sharper clips', () => {
+    const h3 = VIDEO.find(model => model.id === 'MiniMax-H3')!
+    const at = (seconds: number, resolution: string) => videoCostAt(h3, seconds, resolution)
+    expect(at(6, '768P')).toBeLessThan(at(10, '768P')!)
+    expect(at(10, '768P')).toBeLessThan(at(12, '768P')!)
+    expect(at(12, '768P')).toBeLessThan(at(12, '2K')!)
+    const perSecond = VIDEO.find(model => model.id === 'videoretalk')!
+    expect(videoCostAt(perSecond, 10, '720P')).toBe(20)
+  })
+
+  it('says when the model draws, and charges, a lower tier than picked', () => {
+    expect(imageTierNote('4k', '4k', '16:9')).toBeNull()
+    expect(imageTierNote('4k', undefined, '16:9')).toBeNull()
+    expect(imageTierNote('4k', '1k', '1:1')).toContain('最高出 1K')
+    expect(imageTierNote('4k', '1k', 'auto')).toContain('请选一个比例')
   })
 })

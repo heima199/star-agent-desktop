@@ -376,9 +376,9 @@ describe('build-sidecars Windows x64 target mapping', () => {
   it('stamps the sidecar with the app name, publisher, version and icon', () => {
     const desktopRoot = path.resolve(import.meta.dirname, '..')
     const metadata = readSidecarWindowsMetadata(desktopRoot)
-    expect(metadata.title).toBe('STAR Agent')
+    expect(metadata.title).toBe('PRIVO STAR WORK')
     expect(metadata.publisher).toBe('STAR')
-    expect(metadata.description).toBe('STAR Agent')
+    expect(metadata.description).toBe('PRIVO STAR WORK')
     // The app version, padded to the four parts Windows wants.
     const appVersion = JSON.parse(readFileSync(path.join(desktopRoot, 'package.json'), 'utf8')).version as string
     expect(metadata.version).toBe(`${appVersion}.0`)

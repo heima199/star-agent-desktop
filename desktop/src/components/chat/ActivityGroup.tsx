@@ -233,11 +233,6 @@ export const ActivityGroup = memo(function ActivityGroup({
           <span data-activity-summary="" className="min-w-0 flex-1 truncate font-medium text-[var(--color-text-primary)]">
             {summaryText}
           </span>
-          {failedCount > 0 && (
-            <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[12px] text-[var(--color-error)]">
-              {t('toolGroup.failedCount', { count: failedCount })}
-            </span>
-          )}
           {awaitingCount > 0 ? (
             <span className="shrink-0 whitespace-nowrap text-[12px] font-medium text-[var(--color-on-warning-container)]">
               {t('permission.awaitingApproval')}
@@ -305,10 +300,15 @@ export const ActivityGroup = memo(function ActivityGroup({
           >
             {summaryText}
           </span>
+          {/* Failures show as a red mark only; the word "failed" is not printed in the header. */}
           {failedCount > 0 && (
-            <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[12px] text-[var(--color-error)]">
+            <span
+              role="img"
+              aria-label={t('toolGroup.failedCount', { count: failedCount })}
+              data-testid="activity-failed-mark"
+              className="inline-flex shrink-0 items-center text-[var(--color-error)]"
+            >
               <CircleX size={12} strokeWidth={2} aria-hidden="true" />
-              {t('toolGroup.failedCount', { count: failedCount })}
             </span>
           )}
           {awaitingCount > 0 ? (

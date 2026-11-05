@@ -80,14 +80,14 @@ describe('Electron tray service', () => {
       expect(trayMocks.createFromPath).toHaveBeenCalledWith(iconPath)
       expect(trayMocks.Tray).toHaveBeenCalledTimes(1)
       // The tooltip and menu carry the product name, not whatever app.name is.
-      expect(trayMocks.tray.setToolTip).toHaveBeenCalledWith('STAR Agent')
+      expect(trayMocks.tray.setToolTip).toHaveBeenCalledWith('PRIVO STAR WORK')
       expect(trayMocks.buildFromTemplate).toHaveBeenCalledTimes(1)
 
       const template = trayMocks.buildFromTemplate.mock.calls[0]?.[0] as Array<{ label?: string, click?: () => void, type?: string }>
       expect(template.map(item => item.label ?? item.type)).toEqual([
-        '显示 STAR Agent',
+        '显示 PRIVO STAR WORK',
         'separator',
-        '退出 STAR Agent',
+        '退出 PRIVO STAR WORK',
       ])
 
       template[0]?.click?.()

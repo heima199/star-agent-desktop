@@ -13,7 +13,7 @@ import { PROVIDER_PRESETS } from '../../../src/server/config/providerPresets'
 import type { LiveScenarioRunner } from '../agent-flow/live'
 import { LIVE_AGENT_FLOW_SCENARIOS } from '../agent-flow/liveScenarios'
 import { MOCK_IMAGE_PNG_BASE64, type MockLlmServer, type RecordedRequest } from './server'
-import { UPSTREAM_ERROR_TRIGGER, UPSTREAM_REFUSAL_TRIGGER } from './scriptedModel'
+import { LONG_REPLY_AFTER_TOOL_TRIGGER, UPSTREAM_ERROR_TRIGGER, UPSTREAM_REFUSAL_TRIGGER } from './scriptedModel'
 
 export type MockAgentScenario = { id: string; title: string }
 
@@ -42,6 +42,10 @@ export const MOCK_ONLY_SCENARIOS: readonly MockAgentScenario[] = [
   {
     id: 'mock-interrupt-closes-upstream',
     title: 'Stopping a streaming reply closes the upstream connection instead of letting it run on',
+  },
+  {
+    id: 'mock-stop-after-approved-tool',
+    title: 'Stopping the reply that follows an approved tool ends the turn and closes the upstream',
   },
   {
     id: 'mock-stop-question-compact-recovers',
@@ -659,6 +663,55 @@ export function createMockOnlyRunners(
         if (stream.outcome !== 'cancelled') {
           throw new Error(`5s after stop the upstream stream was still ${stream.outcome}, not cancelled`)
         }
+      } finally {
+        socket.close()
+      }
+    },
+
+    // Reported 2026-11-05: after approving a shell command, Stop during the
+    // model's next reply was sent five times and the turn kept running.
+    async 'mock-stop-after-approved-tool'(ctx) {
+      const socket = await ctx.openSocket(await ctx.createSession())
+      try {
+        ctx.pinRuntime(socket)
+        const start = socket.messages.length
+        const upstreamStart = requests.length
+        socket.send({ type: 'user_message', content: `Run the shell command \`echo stop-fixture\` and explain it at length. ${LONG_REPLY_AFTER_TOOL_TRIGGER}` })
+        const settled = await socket.waitFor(
+          (m) => m.type === 'permission_request' || m.type === 'content_delta',
+          ctx.stepTimeoutMs,
+          'permission_request or reply',
+          start,
+        )
+        if (settled.type === 'permission_request') {
+          socket.send({ type: 'permission_response', requestId: settled.requestId, allowed: true, rule: 'agent-flow-mock' })
+        }
+        // The reply that follows the tool result, not the tool call itself.
+        await socket.waitFor((m) => m.type === 'content_delta' && String(m.text ?? '').includes('Line'), ctx.stepTimeoutMs, 'reply after the tool', start)
+        const followUp = requests.slice(upstreamStart).filter((request) => request.stream && (request.body.tools ?? []).length > 0).pop()
+        if (!followUp || followUp.outcome !== 'pending') throw new Error('the reply after the tool was not streaming when Stop was sent')
+
+        const stopStart = socket.messages.length
+        socket.send({ type: 'stop_generation' })
+        await socket.waitFor((m) => m.type === 'status' && m.state === 'idle', ctx.stepTimeoutMs, 'idle after Stop', stopStart)
+        const deadline = Date.now() + 5_000
+        while (followUp.outcome === 'pending' && Date.now() < deadline) await Bun.sleep(50)
+        if (followUp.outcome !== 'cancelled') throw new Error(`5s after Stop the reply upstream was still ${followUp.outcome}, not cancelled`)
+
+        // Nothing of the stopped turn may come back and make the client look busy again.
+        await Bun.sleep(2_000)
+        const after = socket.messages.slice(stopStart)
+        const lastStatus = [...after].reverse().find((m) => m.type === 'status')
+        if (lastStatus && lastStatus.state !== 'idle') throw new Error(`after Stop the session went back to ${String(lastStatus.state)}`)
+        const lateText = after.filter((m) => m.type === 'content_delta' || m.type === 'thinking').length
+        const idleAt = after.findIndex((m) => m.type === 'status' && m.state === 'idle')
+        const resumed = after.slice(idleAt + 1).filter((m) => m.type === 'content_delta' || m.type === 'thinking')
+        if (resumed.length > 0) throw new Error(`${resumed.length} reply frames arrived after Stop went idle (of ${lateText} after Stop)`)
+
+        // The session is usable at once.
+        const nextStart = socket.messages.length
+        socket.send({ type: 'user_message', content: 'Reply with one short sentence.' })
+        await socket.waitFor((m) => m.type === 'message_complete', ctx.stepTimeoutMs, 'next turn after Stop', nextStart)
       } finally {
         socket.close()
       }

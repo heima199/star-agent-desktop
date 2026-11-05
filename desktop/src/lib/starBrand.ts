@@ -8,7 +8,8 @@
  * Same rules as the server's utils/starBrand.ts and STAR Code's starBrand.ts:
  * control characters and angle brackets become spaces, runs of spaces
  * collapse, at most 24 characters; empty or the console's unset default
- * "MaxClaw" is STAR. "X Agent" / "X Code" never double the last word.
+ * "MaxClaw" is STAR. "X STAR WORK" (the desktop app, "X Agent" before 1.2.0) /
+ * "X Code" never repeat words the name already ends with.
  * Packaging names (exe, installer, Start menu, CLI) do not follow it.
  */
 
@@ -31,10 +32,32 @@ export function normalizeStarBrandName(raw: unknown): string {
 
 export type StarBrandProduct = 'Agent' | 'Code'
 
-/** "X Agent" / "X Code"; a name that already ends with the word stays as it is. */
+/**
+ * The words after the console's name. The desktop app is "X STAR WORK" since
+ * 1.2.0 (it was "X Agent"); the IDE stays "X Code". `{brandAgent}` keeps its
+ * placeholder name so existing texts need no change.
+ */
+const PRODUCT_SUFFIX: { [p in StarBrandProduct]: string } = { Agent: 'STAR WORK', Code: 'Code' }
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * "X STAR WORK" / "X Code". Words the name already ends with are not repeated:
+ * "PRIVO STAR WORK" stays as it is, and the default name "STAR" (or "PRIVO STAR")
+ * only gets " WORK", never "STAR STAR WORK".
+ */
 export function starBrandProductName(brand: string, product: StarBrandProduct): string {
   const name = brand.trim() || STAR_BRAND_DEFAULT
-  return new RegExp(`(^|\\s)${product}$`, 'i').test(name) ? name : `${name} ${product}`
+  const suffixWords = PRODUCT_SUFFIX[product].split(' ')
+  // Longest run of the suffix's leading words that the name already ends with
+  for (let take = suffixWords.length; take > 0; take--) {
+    const lead = suffixWords.slice(0, take).join(' ')
+    if (new RegExp(`(^|\\s)${escapeRegExp(lead)}$`, 'i').test(name)) {
+      const rest = suffixWords.slice(take).join(' ')
+      return rest ? `${name} ${rest}` : name
+    }
+  }
+  return `${name} ${suffixWords.join(' ')}`
 }
 
 /** The values of the three placeholders for one name. */

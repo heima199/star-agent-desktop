@@ -53,6 +53,8 @@ export type MockRequest = {
 export const UPSTREAM_ERROR_TRIGGER = 'MOCK_UPSTREAM_ERROR'
 export const UPSTREAM_ERROR_MESSAGE = 'mock upstream rejected this request'
 export const UPSTREAM_REFUSAL_TRIGGER = 'MOCK_UPSTREAM_REFUSAL'
+/** Prompt marker: after a tool result, stream a long reply instead of a one-line summary. */
+export const LONG_REPLY_AFTER_TOOL_TRIGGER = 'MOCK_LONG_AFTER_TOOL'
 
 function blocksOf(message: RequestMessage | undefined): RequestBlock[] {
   if (!message) return []
@@ -209,6 +211,11 @@ export function decideReply(request: MockRequest): MockReply {
   if (last?.role === 'user' && results.length > 0) {
     const result = results[results.length - 1]!
     const body = toolResultText(result).trim()
+    // The reply after an approved tool streams for ~12s, so Stop lands mid-reply:
+    // the case where Stop used to leave the turn running (2026-11-05).
+    if (prompt.includes(LONG_REPLY_AFTER_TOOL_TRIGGER)) {
+      return text(Array.from({ length: 300 }, (_, index) => `Line ${index + 1} about ${body}`).join('\n'), 40)
+    }
     if (prompt.startsWith('MOCK_SCHEDULED_TASK_RESULTS ') && !result.is_error && hasTool(request, 'ScheduledTask')) {
       try {
         const parsed = JSON.parse(body)

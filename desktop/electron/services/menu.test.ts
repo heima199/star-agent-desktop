@@ -357,7 +357,7 @@ describe('Electron application menu service', () => {
     // The installed menu is labelled with the product name, not app.name.
     const hideItem = template
       .flatMap(item => (item.submenu as MenuItemConstructorOptions[] | undefined) ?? [])
-      .find(item => item.label === 'Hide STAR Agent')
+      .find(item => item.label === 'Hide PRIVO STAR WORK')
 
     expect(hideItem).toBeDefined()
     hideItem?.click?.({} as never, {} as never, {} as never)

@@ -76,6 +76,20 @@ export type StarCatalog = {
   videoLimits: { maxReferenceImages: number; maxReferenceVideos: number; mediaTypes: string[] }
 }
 
+export type StarCreditEstimateRequest =
+  | { kind: 'image'; model?: string; ratio?: string; resolution?: string; count?: number; edit?: boolean }
+  | { kind: 'video'; model?: string; mode?: string; duration?: number; resolution?: string }
+export type StarCreditEstimate = {
+  credits?: number
+  /** True when the console priced it; false for its rule with default settings. */
+  exact: boolean
+  model?: string
+  size?: string
+  /** The tier an image is charged at (lower than asked when the model draws no larger). */
+  tier?: '1k' | '2k' | '4k'
+  duration?: number
+  resolution?: string
+}
 export type StarMediaStatus = 'queued' | 'uploading' | 'submitting' | 'running' | 'downloading' | 'succeeded' | 'failed'
 
 export type StarMediaTask = {
@@ -316,6 +330,8 @@ export const starApi = {
   deleteTask: (id: string, files: boolean) => api.delete<{ ok: true }>(`/api/star/media/tasks/${encodeURIComponent(id)}${files ? '?files=1' : ''}`),
   generateImage: (input: StarImageRequest) => api.post<{ task: StarMediaTask }>('/api/star/media/image', input, { timeout: 120_000 }),
   generateVideo: (input: StarVideoRequest) => api.post<{ task: StarMediaTask }>('/api/star/media/video', input, { timeout: 120_000 }),
+  /** What a job would cost: the console's own price for these values (exact), or its rule offline. */
+  estimateCredits: (input: StarCreditEstimateRequest) => api.post<{ estimate: StarCreditEstimate }>('/api/star/media/estimate', input, { timeout: 20_000 }),
   outputBlob: (taskId: string, index: number) => apiGetBlob(`/api/star/media/tasks/${encodeURIComponent(taskId)}/file/${index}`, { timeout: 120_000 }),
   check: () => api.get<{ run: StarCheckRun | null }>('/api/star/check'),
   startCheck: (includeGeneration: boolean) => api.post<{ run: StarCheckRun | null }>('/api/star/check', { includeGeneration }),

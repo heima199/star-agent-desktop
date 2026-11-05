@@ -3,7 +3,7 @@ import { sessionsApi } from '../api/sessions'
 import { ApiError } from '../api/client'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
 import { useSessionStore } from './sessionStore'
-import { SETTINGS_TAB_ID, MARKET_TAB_ID, CONNECTORS_TAB_ID, useTabStore } from './tabStore'
+import { SETTINGS_TAB_ID, MARKET_TAB_ID, CONNECTORS_TAB_ID, STAR_PAGE_TAB_PREFIX, useTabStore } from './tabStore'
 
 vi.mock('../api/sessions', () => ({
   sessionsApi: {
@@ -372,6 +372,51 @@ describe('tabStore', () => {
       },
     ])
     expect(useTabStore.getState().activeTabId).toBe(MARKET_TAB_ID)
+  })
+
+  // The Design tab used to be memory only: a reload dropped it, and with it the
+  // open project's canvas, leaving the project's chat as a plain session tab.
+  it('saves the Design tab with its open project and restores both after a reload', async () => {
+    const designTabId = `${STAR_PAGE_TAB_PREFIX}design`
+    useTabStore.getState().openTab(designTabId, 'Design', 'star-page')
+    useTabStore.getState().setTabPageParams(designTabId, { project: 'proj-1' })
+
+    const saved = JSON.parse(localStorage.getItem('cc-haha-open-tabs')!)
+    expect(saved).toEqual({
+      openTabs: [{ sessionId: designTabId, title: 'Design', type: 'star-page', pageParams: { project: 'proj-1' } }],
+      activeTabId: designTabId,
+    })
+
+    useTabStore.setState({ tabs: [], activeTabId: null })
+    await useTabStore.getState().restoreTabs()
+
+    expect(useTabStore.getState().tabs).toEqual([{
+      sessionId: designTabId,
+      title: 'Design',
+      type: 'star-page',
+      status: 'idle',
+      pageId: 'design',
+      pageParams: { project: 'proj-1' },
+    }])
+    expect(useTabStore.getState().activeTabId).toBe(designTabId)
+    // A STAR page id is not a chat: restore must not look it up as one.
+    expect(sessionsApi.getSummary).not.toHaveBeenCalled()
+  })
+
+  it('forgets the project once the Design tab is back on its home', () => {
+    const designTabId = `${STAR_PAGE_TAB_PREFIX}design`
+    useTabStore.getState().openTab(designTabId, 'Design', 'star-page')
+    useTabStore.getState().setTabPageParams(designTabId, { project: 'proj-1' })
+    useTabStore.getState().setTabPageParams(designTabId, undefined)
+
+    expect(useTabStore.getState().tabs[0]).not.toHaveProperty('pageParams')
+    expect(JSON.parse(localStorage.getItem('cc-haha-open-tabs')!).openTabs[0]).not.toHaveProperty('pageParams')
+  })
+
+  it('still keeps the other STAR pages out of tab storage', () => {
+    useTabStore.getState().openTab(`${STAR_PAGE_TAB_PREFIX}calendar`, '日历', 'star-page')
+
+    expect(JSON.parse(localStorage.getItem('cc-haha-open-tabs')!).openTabs).toEqual([])
   })
 
   it('restores historical session tabs by id with metadata ready before activation', async () => {

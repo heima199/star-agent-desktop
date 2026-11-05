@@ -89,6 +89,15 @@ function writeJson(storage: StorageLike, key: string, value: unknown): void {
   storage.setItem(key, JSON.stringify(value))
 }
 
+/** tabStore's STAR_PAGE_TAB_PREFIX + 'design' (kept here: this module must not import the stores). */
+const PERSISTED_DESIGN_PAGE_TAB_ID = '__star_page__design'
+
+function readStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined
+  const entries = Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
+  return entries.length ? Object.fromEntries(entries) : undefined
+}
+
 function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void {
   const raw = storage.getItem(TAB_STORAGE_KEY)
   if (!raw) return
@@ -107,6 +116,17 @@ function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void
       .filter((tab) => !isLegacyTraceListTab(tab))
       .filter((tab) => !isLegacyTraceTab(tab) || getLegacyTraceSessionId(tab) !== null)
       .map((tab) => {
+        // The Design page tab is saved with the project it shows; rewriting it
+        // to a 'session' tab made restore drop it, and the canvas with it.
+        if (tab.sessionId === PERSISTED_DESIGN_PAGE_TAB_ID) {
+          const pageParams = readStringRecord(tab.pageParams)
+          return {
+            sessionId: PERSISTED_DESIGN_PAGE_TAB_ID,
+            title: tab.title as string,
+            type: 'star-page',
+            ...(pageParams ? { pageParams } : {}),
+          }
+        }
         const specialType = getPersistedSpecialTabType(tab)
         const tracedSessionId = getLegacyTraceSessionId(tab)
         return {
