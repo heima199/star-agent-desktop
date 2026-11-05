@@ -448,7 +448,7 @@ jobs:
             exit 0
           fi
 
-          app_path="build-artifacts/electron/${{ matrix.app_bundle_dir }}/STAR Agent.app"
+          app_path="build-artifacts/electron/${{ matrix.app_bundle_dir }}/PRIVO STAR WORK.app"
           set +e
           notarize_app_bundle "$app_path"
           status=$?
@@ -506,10 +506,10 @@ jobs:
           $unpackedDir = Join-Path $PWD "desktop/build-artifacts/electron/${{ matrix.unpacked_dir }}"
           $stageDir = Join-Path $env:RUNNER_TEMP "signpath-application-${{ matrix.arch }}"
           $sidecarName = "claude-sidecar-${{ matrix.target_triple }}.exe"
-          $mainExecutable = Join-Path $unpackedDir "STAR Agent.exe"
+          $mainExecutable = Join-Path $unpackedDir "PRIVO STAR WORK.exe"
           $sidecarExecutable = Join-Path $unpackedDir "resources/app.asar.unpacked/src-tauri/binaries/$sidecarName"
           New-Item -ItemType Directory -Path $stageDir | Out-Null
-          Copy-Item -LiteralPath $mainExecutable -Destination (Join-Path $stageDir "STAR Agent.exe")
+          Copy-Item -LiteralPath $mainExecutable -Destination (Join-Path $stageDir "PRIVO STAR WORK.exe")
           Copy-Item -LiteralPath $sidecarExecutable -Destination (Join-Path $stageDir $sidecarName)
           "stage_dir=$stageDir" >> $env:GITHUB_OUTPUT
           "unpacked_dir=$unpackedDir" >> $env:GITHUB_OUTPUT
@@ -547,9 +547,9 @@ jobs:
           $signedDir = Join-Path $env:RUNNER_TEMP "signpath-signed-application-${{ matrix.arch }}"
           $unpackedDir = "${{ steps.stage-signpath-application.outputs.unpacked_dir }}"
           $sidecarName = "${{ steps.stage-signpath-application.outputs.sidecar_name }}"
-          $mainExecutable = Join-Path $unpackedDir "STAR Agent.exe"
+          $mainExecutable = Join-Path $unpackedDir "PRIVO STAR WORK.exe"
           $sidecarExecutable = Join-Path $unpackedDir "resources/app.asar.unpacked/src-tauri/binaries/$sidecarName"
-          Copy-Item -LiteralPath (Join-Path $signedDir "STAR Agent.exe") -Destination $mainExecutable -Force
+          Copy-Item -LiteralPath (Join-Path $signedDir "PRIVO STAR WORK.exe") -Destination $mainExecutable -Force
           Copy-Item -LiteralPath (Join-Path $signedDir $sidecarName) -Destination $sidecarExecutable -Force
 
           function Assert-SignPathSignature([string] $Path) {
@@ -582,7 +582,7 @@ jobs:
         id: stage-signpath-installer
         shell: pwsh
         run: |
-          $installerName = "STAR-Agent-${{ steps.version.outputs.value }}-win-${{ matrix.arch }}.exe"
+          $installerName = "PRIVO-STAR-WORK-${{ steps.version.outputs.value }}-win-${{ matrix.arch }}.exe"
           $installerPath = Join-Path $PWD "desktop/build-artifacts/electron/$installerName"
           $stageDir = Join-Path $env:RUNNER_TEMP "signpath-installer-${{ matrix.arch }}"
           New-Item -ItemType Directory -Path $stageDir | Out-Null
@@ -669,49 +669,49 @@ jobs:
           case "${{ matrix.label }}" in
             macOS-ARM64)
               expected=(
-                "STAR-Agent-${APP_VERSION}-mac-arm64.dmg"
-                "STAR-Agent-${APP_VERSION}-mac-arm64.dmg.blockmap"
-                "STAR-Agent-${APP_VERSION}-mac-arm64.zip"
-                "STAR-Agent-${APP_VERSION}-mac-arm64.zip.blockmap"
+                "PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.dmg"
+                "PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.dmg.blockmap"
+                "PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.zip"
+                "PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.zip.blockmap"
                 "latest-mac.yml"
               )
               ;;
             macOS-x64)
               expected=(
-                "STAR-Agent-${APP_VERSION}-mac-x64.dmg"
-                "STAR-Agent-${APP_VERSION}-mac-x64.dmg.blockmap"
-                "STAR-Agent-${APP_VERSION}-mac-x64.zip"
-                "STAR-Agent-${APP_VERSION}-mac-x64.zip.blockmap"
+                "PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.dmg"
+                "PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.dmg.blockmap"
+                "PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.zip"
+                "PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.zip.blockmap"
                 "latest-mac.yml"
               )
               ;;
             Linux-x64)
               expected=(
-                "STAR-Agent-${APP_VERSION}-linux-x86_64.AppImage"
-                "STAR-Agent-${APP_VERSION}-linux-amd64.deb"
-                "STAR-Agent-${APP_VERSION}-linux-x86_64.rpm"
+                "PRIVO-STAR-WORK-${APP_VERSION}-linux-x86_64.AppImage"
+                "PRIVO-STAR-WORK-${APP_VERSION}-linux-amd64.deb"
+                "PRIVO-STAR-WORK-${APP_VERSION}-linux-x86_64.rpm"
                 "latest-linux.yml"
               )
               ;;
             Linux-ARM64)
               expected=(
-                "STAR-Agent-${APP_VERSION}-linux-arm64.AppImage"
-                "STAR-Agent-${APP_VERSION}-linux-arm64.deb"
-                "STAR-Agent-${APP_VERSION}-linux-aarch64.rpm"
+                "PRIVO-STAR-WORK-${APP_VERSION}-linux-arm64.AppImage"
+                "PRIVO-STAR-WORK-${APP_VERSION}-linux-arm64.deb"
+                "PRIVO-STAR-WORK-${APP_VERSION}-linux-aarch64.rpm"
                 "latest-linux-arm64.yml"
               )
               ;;
             Windows-x64)
               expected=(
-                "STAR-Agent-${APP_VERSION}-win-x64.exe"
-                "STAR-Agent-${APP_VERSION}-win-x64.exe.blockmap"
+                "PRIVO-STAR-WORK-${APP_VERSION}-win-x64.exe"
+                "PRIVO-STAR-WORK-${APP_VERSION}-win-x64.exe.blockmap"
                 "latest.yml"
               )
               ;;
             Windows-ARM64)
               expected=(
-                "STAR-Agent-${APP_VERSION}-win-arm64.exe"
-                "STAR-Agent-${APP_VERSION}-win-arm64.exe.blockmap"
+                "PRIVO-STAR-WORK-${APP_VERSION}-win-arm64.exe"
+                "PRIVO-STAR-WORK-${APP_VERSION}-win-arm64.exe.blockmap"
                 "latest.yml"
               )
               ;;
@@ -862,24 +862,24 @@ jobs:
           APP_VERSION: ${{ steps.version.outputs.value }}
         run: |
           expected=(
-            "STAR-Agent-${APP_VERSION}-mac-arm64.dmg"
-            "STAR-Agent-${APP_VERSION}-mac-arm64.dmg.blockmap"
-            "STAR-Agent-${APP_VERSION}-mac-arm64.zip"
-            "STAR-Agent-${APP_VERSION}-mac-arm64.zip.blockmap"
-            "STAR-Agent-${APP_VERSION}-mac-x64.dmg"
-            "STAR-Agent-${APP_VERSION}-mac-x64.dmg.blockmap"
-            "STAR-Agent-${APP_VERSION}-mac-x64.zip"
-            "STAR-Agent-${APP_VERSION}-mac-x64.zip.blockmap"
-            "STAR-Agent-${APP_VERSION}-linux-x86_64.AppImage"
-            "STAR-Agent-${APP_VERSION}-linux-amd64.deb"
-            "STAR-Agent-${APP_VERSION}-linux-x86_64.rpm"
-            "STAR-Agent-${APP_VERSION}-linux-arm64.AppImage"
-            "STAR-Agent-${APP_VERSION}-linux-arm64.deb"
-            "STAR-Agent-${APP_VERSION}-linux-aarch64.rpm"
-            "STAR-Agent-${APP_VERSION}-win-x64.exe"
-            "STAR-Agent-${APP_VERSION}-win-x64.exe.blockmap"
-            "STAR-Agent-${APP_VERSION}-win-arm64.exe"
-            "STAR-Agent-${APP_VERSION}-win-arm64.exe.blockmap"
+            "PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.dmg"
+            "PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.dmg.blockmap"
+            "PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.zip"
+            "PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.zip.blockmap"
+            "PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.dmg"
+            "PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.dmg.blockmap"
+            "PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.zip"
+            "PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.zip.blockmap"
+            "PRIVO-STAR-WORK-${APP_VERSION}-linux-x86_64.AppImage"
+            "PRIVO-STAR-WORK-${APP_VERSION}-linux-amd64.deb"
+            "PRIVO-STAR-WORK-${APP_VERSION}-linux-x86_64.rpm"
+            "PRIVO-STAR-WORK-${APP_VERSION}-linux-arm64.AppImage"
+            "PRIVO-STAR-WORK-${APP_VERSION}-linux-arm64.deb"
+            "PRIVO-STAR-WORK-${APP_VERSION}-linux-aarch64.rpm"
+            "PRIVO-STAR-WORK-${APP_VERSION}-win-x64.exe"
+            "PRIVO-STAR-WORK-${APP_VERSION}-win-x64.exe.blockmap"
+            "PRIVO-STAR-WORK-${APP_VERSION}-win-arm64.exe"
+            "PRIVO-STAR-WORK-${APP_VERSION}-win-arm64.exe.blockmap"
           )
 
           missing=()
@@ -923,7 +923,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.value }}
-          name: STAR Agent v${{ steps.version.outputs.value }}
+          name: PRIVO STAR WORK v${{ steps.version.outputs.value }}
           body: ${{ steps.release_notes.outputs.body }}
           draft: true
           prerelease: false

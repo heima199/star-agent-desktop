@@ -250,7 +250,7 @@ describe('release desktop workflow', () => {
     expect(signedBuildStep).toContain('xcrun stapler staple "$app_path"')
     expect(signedBuildStep).toContain('xcrun stapler validate "$app_path"')
     expect(signedBuildStep).toContain('spctl -a -vv -t execute "$app_path"')
-    expect(signedBuildStep).toContain('app_path="build-artifacts/electron/${{ matrix.app_bundle_dir }}/STAR Agent.app"')
+    expect(signedBuildStep).toContain('app_path="build-artifacts/electron/${{ matrix.app_bundle_dir }}/PRIVO STAR WORK.app"')
     expect(signedBuildStep).toContain('package_args=( ${{ matrix.builder_args }} --prepackaged "$app_path" --publish never -c.mac.notarize=false )')
     expect(signedBuildStep).toContain('find build-artifacts/electron -maxdepth 1 -type f -delete')
     expect(signedBuildStep).toContain('Signed electron-builder timed out')
@@ -440,7 +440,7 @@ describe('release desktop workflow', () => {
     expect(workflow.indexOf('Verify Windows updater config before SignPath')).toBeLessThan(
       workflow.indexOf('Stage project-owned Windows application executables'),
     )
-    expect(stageApplicationStep).toContain('STAR Agent.exe')
+    expect(stageApplicationStep).toContain('PRIVO STAR WORK.exe')
     expect(stageApplicationStep).toContain('claude-sidecar-${{ matrix.target_triple }}.exe')
     expect(stageApplicationStep).not.toContain('rg.exe')
     expect(stageApplicationStep).not.toContain('node-pty')
@@ -458,10 +458,10 @@ describe('release desktop workflow', () => {
     expect(restoreInstallerStep).toContain('A trusted production signature is required')
     expect(refreshMetadataStep).toContain('scripts/refresh-windows-update-metadata.ts')
     expect(refreshMetadataStep).toContain('desktop/build-artifacts/electron/latest.yml')
-    expect(applicationConfiguration).toContain('<pe-file path="STAR Agent.exe">')
+    expect(applicationConfiguration).toContain('<pe-file path="PRIVO STAR WORK.exe">')
     expect(applicationConfiguration).toContain('<pe-file path="claude-sidecar-*.exe">')
     expect(applicationConfiguration).not.toContain('rg.exe')
-    expect(installerConfiguration).toContain('<pe-file path="STAR-Agent-*-win-*.exe">')
+    expect(installerConfiguration).toContain('<pe-file path="PRIVO-STAR-WORK-*-win-*.exe">')
     expect(workflow).not.toContain('WINDOWS_CERTIFICATE')
     expect(workflow).not.toContain('WINDOWS_CERTIFICATE_PASSWORD')
     expect(workflow.indexOf('Restore and verify signed Windows application executables')).toBeLessThan(workflow.indexOf('Package NSIS installer from signed Windows application'))
@@ -492,7 +492,7 @@ describe('release desktop workflow', () => {
     expect(buildJob).toContain('builder_args: --win nsis --arm64')
     expect(buildJob).toContain('builder_args: --linux AppImage deb rpm --x64')
     expect(buildJob).toContain('builder_args: --linux AppImage deb rpm --arm64')
-    expect(buildJob).toContain('STAR-Agent-${APP_VERSION}-win-arm64.exe')
+    expect(buildJob).toContain('PRIVO-STAR-WORK-${APP_VERSION}-win-arm64.exe')
     expect(buildJob).toContain('Upload release artifacts for final publish')
     expect(buildJob).toContain('actions/upload-artifact@v4')
     expect(buildJob).toContain('name: desktop-release-artifacts-${{ matrix.label }}')
@@ -569,27 +569,27 @@ describe('release desktop workflow', () => {
       }
     }
     const version = desktopPackage.version
-    expect(desktopPackage.build.artifactName).toBe('STAR-Agent-${version}-${os}-${arch}.${ext}')
+    expect(desktopPackage.build.artifactName).toBe('PRIVO-STAR-WORK-${version}-${os}-${arch}.${ext}')
 
     const expectedReleaseAssets = [
-      `STAR-Agent-${version}-mac-arm64.dmg`,
-      `STAR-Agent-${version}-mac-arm64.dmg.blockmap`,
-      `STAR-Agent-${version}-mac-arm64.zip`,
-      `STAR-Agent-${version}-mac-arm64.zip.blockmap`,
-      `STAR-Agent-${version}-mac-x64.dmg`,
-      `STAR-Agent-${version}-mac-x64.dmg.blockmap`,
-      `STAR-Agent-${version}-mac-x64.zip`,
-      `STAR-Agent-${version}-mac-x64.zip.blockmap`,
-      `STAR-Agent-${version}-linux-x86_64.AppImage`,
-      `STAR-Agent-${version}-linux-amd64.deb`,
-      `STAR-Agent-${version}-linux-x86_64.rpm`,
-      `STAR-Agent-${version}-linux-arm64.AppImage`,
-      `STAR-Agent-${version}-linux-arm64.deb`,
-      `STAR-Agent-${version}-linux-aarch64.rpm`,
-      `STAR-Agent-${version}-win-x64.exe`,
-      `STAR-Agent-${version}-win-x64.exe.blockmap`,
-      `STAR-Agent-${version}-win-arm64.exe`,
-      `STAR-Agent-${version}-win-arm64.exe.blockmap`,
+      `PRIVO-STAR-WORK-${version}-mac-arm64.dmg`,
+      `PRIVO-STAR-WORK-${version}-mac-arm64.dmg.blockmap`,
+      `PRIVO-STAR-WORK-${version}-mac-arm64.zip`,
+      `PRIVO-STAR-WORK-${version}-mac-arm64.zip.blockmap`,
+      `PRIVO-STAR-WORK-${version}-mac-x64.dmg`,
+      `PRIVO-STAR-WORK-${version}-mac-x64.dmg.blockmap`,
+      `PRIVO-STAR-WORK-${version}-mac-x64.zip`,
+      `PRIVO-STAR-WORK-${version}-mac-x64.zip.blockmap`,
+      `PRIVO-STAR-WORK-${version}-linux-x86_64.AppImage`,
+      `PRIVO-STAR-WORK-${version}-linux-amd64.deb`,
+      `PRIVO-STAR-WORK-${version}-linux-x86_64.rpm`,
+      `PRIVO-STAR-WORK-${version}-linux-arm64.AppImage`,
+      `PRIVO-STAR-WORK-${version}-linux-arm64.deb`,
+      `PRIVO-STAR-WORK-${version}-linux-aarch64.rpm`,
+      `PRIVO-STAR-WORK-${version}-win-x64.exe`,
+      `PRIVO-STAR-WORK-${version}-win-x64.exe.blockmap`,
+      `PRIVO-STAR-WORK-${version}-win-arm64.exe`,
+      `PRIVO-STAR-WORK-${version}-win-arm64.exe.blockmap`,
     ]
     const namespacedMetadata = [
       'latest-mac-macOS-ARM64.yml',
@@ -634,20 +634,20 @@ describe('release desktop workflow', () => {
     const buildJob = extractJob(workflow, 'build')
     const publishJob = extractJob(workflow, 'publish-release')
     const expectedFiles = [
-      'STAR-Agent-${APP_VERSION}-mac-arm64.dmg',
-      'STAR-Agent-${APP_VERSION}-mac-arm64.zip',
-      'STAR-Agent-${APP_VERSION}-mac-x64.dmg',
-      'STAR-Agent-${APP_VERSION}-mac-x64.zip',
-      'STAR-Agent-${APP_VERSION}-linux-x86_64.AppImage',
-      'STAR-Agent-${APP_VERSION}-linux-amd64.deb',
-      'STAR-Agent-${APP_VERSION}-linux-x86_64.rpm',
-      'STAR-Agent-${APP_VERSION}-linux-arm64.AppImage',
-      'STAR-Agent-${APP_VERSION}-linux-arm64.deb',
-      'STAR-Agent-${APP_VERSION}-linux-aarch64.rpm',
-      'STAR-Agent-${APP_VERSION}-win-x64.exe',
-      'STAR-Agent-${APP_VERSION}-win-x64.exe.blockmap',
-      'STAR-Agent-${APP_VERSION}-win-arm64.exe',
-      'STAR-Agent-${APP_VERSION}-win-arm64.exe.blockmap',
+      'PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.dmg',
+      'PRIVO-STAR-WORK-${APP_VERSION}-mac-arm64.zip',
+      'PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.dmg',
+      'PRIVO-STAR-WORK-${APP_VERSION}-mac-x64.zip',
+      'PRIVO-STAR-WORK-${APP_VERSION}-linux-x86_64.AppImage',
+      'PRIVO-STAR-WORK-${APP_VERSION}-linux-amd64.deb',
+      'PRIVO-STAR-WORK-${APP_VERSION}-linux-x86_64.rpm',
+      'PRIVO-STAR-WORK-${APP_VERSION}-linux-arm64.AppImage',
+      'PRIVO-STAR-WORK-${APP_VERSION}-linux-arm64.deb',
+      'PRIVO-STAR-WORK-${APP_VERSION}-linux-aarch64.rpm',
+      'PRIVO-STAR-WORK-${APP_VERSION}-win-x64.exe',
+      'PRIVO-STAR-WORK-${APP_VERSION}-win-x64.exe.blockmap',
+      'PRIVO-STAR-WORK-${APP_VERSION}-win-arm64.exe',
+      'PRIVO-STAR-WORK-${APP_VERSION}-win-arm64.exe.blockmap',
     ]
 
     for (const file of expectedFiles) {
@@ -832,7 +832,7 @@ describe('release desktop workflow', () => {
     expect(recoveryHelper).toContain('robocopy.exe')
     expect(recoveryHelper).not.toMatch(/\/XC|\/XN|\/XO/)
     expect(recoveryHelper).toContain('Multiple distinct legacy data sources')
-    expect(recoveryHelper).toContain('Active CLAUDE_CONFIG_DIR is managed outside STAR Agent')
+    expect(recoveryHelper).toContain('Active CLAUDE_CONFIG_DIR is managed outside PRIVO STAR WORK')
     expect(recoveryHelper).toContain('Test-LexicalPathAtOrBelow')
     expect(recoveryHelper).toContain('-SharedInstallDirs @($PerMachineInstallDir)')
     expect(normalizedRecoveryHelper).toContain("function Invoke-LegacyRecovery {\n  param(\n    [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$InstallDirs")
@@ -873,7 +873,7 @@ describe('release desktop workflow', () => {
     expect(installerSmoke).toContain('$Stage completed successfully.')
     expect(installerSmoke).toContain('Fresh install did not create the application executable')
     expect(installerSmoke).toContain('Reinstall removed the application executable')
-    expect(installerSmoke).toContain("'中文 安装目录\\STAR Agent'")
+    expect(installerSmoke).toContain("'中文 安装目录\\PRIVO STAR WORK'")
     expect(installerSmoke).toContain('Invoke-InstalledApplicationSmoke')
     expect(installerSmoke).toContain('CC_HAHA_ELECTRON_WINDOW_SMOKE_LOG')
     expect(installerSmoke).toContain('desktop-server-state.json')

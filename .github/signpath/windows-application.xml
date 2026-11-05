@@ -1,6 +1,6 @@
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
   <zip-file>
-    <pe-file path="STAR Agent.exe">
+    <pe-file path="PRIVO STAR WORK.exe">
       <authenticode-sign/>
     </pe-file>
     <pe-file path="claude-sidecar-*.exe">

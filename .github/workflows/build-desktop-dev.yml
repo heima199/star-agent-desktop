@@ -331,7 +331,7 @@ jobs:
         id: collect
         shell: bash
         run: |
-          STAGING="desktop/build-artifacts/ci-STAR-Agent-v${{ steps.version.outputs.version }}-${{ matrix.artifact_name }}"
+          STAGING="desktop/build-artifacts/ci-PRIVO-STAR-WORK-v${{ steps.version.outputs.version }}-${{ matrix.artifact_name }}"
           mkdir -p "$STAGING"
           find desktop/build-artifacts/electron -maxdepth 1 -type f \
             \( -name "*.dmg" -o -name "*.exe" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.yml" \) \

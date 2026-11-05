@@ -30,7 +30,7 @@ ELECTRON_BUILDER_CLI="${DESKTOP_DIR}/node_modules/electron-builder/out/cli/cli.j
 
 usage() {
   cat <<'EOF'
-Build STAR Agent desktop for macOS with Electron Builder: Apple silicon by
+Build PRIVO STAR WORK desktop for macOS with Electron Builder: Apple silicon by
 default, Intel with MAC_ARCH=x64 (an Apple silicon Mac can build both).
 
 Usage:

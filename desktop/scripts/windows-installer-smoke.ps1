@@ -29,7 +29,7 @@ try {
 
 $resolvedArtifactsDir = (Resolve-Path -LiteralPath $ArtifactsDir).Path
 $installers = @(Get-ChildItem -LiteralPath $resolvedArtifactsDir -File |
-  Where-Object { $_.Name -like "STAR-Agent-*-win-$Arch.exe" })
+  Where-Object { $_.Name -like "PRIVO-STAR-WORK-*-win-$Arch.exe" })
 if ($installers.Count -ne 1) {
   throw "Expected exactly one Windows $Arch installer in $resolvedArtifactsDir, found $($installers.Count)."
 }
@@ -44,12 +44,12 @@ $installer = $installers[0].FullName
 # real install directory (the per-user default is 57 characters).
 $testBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 $testRoot = Join-Path $testBase "smoke-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
-$installDir = Join-Path $testRoot '中文 安装目录\STAR Agent'
+$installDir = Join-Path $testRoot '中文 安装目录\PRIVO STAR WORK'
 $appData = Join-Path $testRoot 'AppData\Roaming'
 $localAppData = Join-Path $testRoot 'AppData\Local'
 $userProfile = Join-Path $testRoot 'UserProfile'
-$appExe = Join-Path $installDir 'STAR Agent.exe'
-$uninstaller = Join-Path $installDir 'Uninstall STAR Agent.exe'
+$appExe = Join-Path $installDir 'PRIVO STAR WORK.exe'
+$uninstaller = Join-Path $installDir 'Uninstall PRIVO STAR WORK.exe'
 $recoveryHelper = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\build\recover-legacy-install-data.ps1')).Path
 $processHelper = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\build\check-install-processes.ps1')).Path
 $siblingProcess = $null
@@ -137,8 +137,10 @@ function Test-IsProcessElevated {
 # process carrying one -- whoever started it -- reads as "the app is still
 # running". Keep this in sync with installer.nsh.
 $installerFallbackImageNames = @(
+  'PRIVO STAR WORK.exe',
+  # Executable names of earlier builds: STAR Agent (1.0.0-1.1.x, STAR_AGENT_PREVIOUS_EXE_NAME)
+  # and builds from before the first rename (STAR_AGENT_LEGACY_EXE_NAME).
   'STAR Agent.exe',
-  # The executable name builds from before the rename shipped (STAR_AGENT_LEGACY_EXE_NAME).
   'Claude Code Haha.exe',
   'claude-sidecar-x86_64-pc-windows-msvc.exe',
   'claude-sidecar-aarch64-pc-windows-msvc.exe',
@@ -366,7 +368,7 @@ function Invoke-InstalledApplicationSmoke {
             -Stage 'Installed application Unicode-path smoke cleanup' `
             -Arguments @(
               '-InstallDir', $InstallDirectory,
-              '-ProcessName', 'STAR Agent.exe',
+              '-ProcessName', 'PRIVO STAR WORK.exe',
               '-Action', 'KillForce',
               '-InstallerPid', [string]$PID,
               '-InstallerParentPid', '0'
@@ -409,11 +411,11 @@ function Invoke-LegacyRecoveryDiagnostic {
     '-CandidateInstallDir',
     $installDir,
     '-UserDataDir',
-    (Join-Path $UserDataRoot 'STAR Agent'),
+    (Join-Path $UserDataRoot 'PRIVO STAR WORK'),
     '-RecoveryRoot',
-    (Join-Path $userProfile 'STAR Agent Data\Recovered'),
+    (Join-Path $userProfile 'PRIVO STAR WORK Data\Recovered'),
     '-ProcessName',
-    'STAR Agent.exe',
+    'PRIVO STAR WORK.exe',
     '-InstallerIdentitySafety',
     'trusted-user'
   )
@@ -454,7 +456,7 @@ try {
 
   $processProbeSource = Join-Path $env:SystemRoot 'System32\ping.exe'
   $siblingDir = "$installDir Tools"
-  $siblingProbe = Join-Path $siblingDir 'STAR Agent.exe'
+  $siblingProbe = Join-Path $siblingDir 'PRIVO STAR WORK.exe'
   New-Item -ItemType Directory -Path $siblingDir -Force | Out-Null
   Copy-Item -LiteralPath $processProbeSource -Destination $siblingProbe
   $siblingProcess = Start-Process -FilePath $siblingProbe -ArgumentList @('-t', '127.0.0.1') -PassThru
@@ -474,7 +476,7 @@ try {
     -ExpectedExitCode 0 `
     -Arguments @(
       '-InstallDir', $installDir,
-      '-ProcessName', 'STAR Agent.exe',
+      '-ProcessName', 'PRIVO STAR WORK.exe',
       '-Action', 'Find',
       '-InstallerPid', [string]$PID,
       '-InstallerParentPid', [string]$installProcess.Id
@@ -493,7 +495,7 @@ try {
   New-Item -ItemType Directory -Path $legacyUserData -Force | Out-Null
   Set-Content -LiteralPath (Join-Path $legacyUserData 'app-mode.json') -Value "{`n  `"mode`": `"default`",`n  `"portable_dir`": null`n}" -NoNewline
   Invoke-LegacyRecoveryDiagnostic -UserDataRoot $legacyAppData
-  if (Test-Path -LiteralPath (Join-Path $legacyAppData 'STAR Agent')) {
+  if (Test-Path -LiteralPath (Join-Path $legacyAppData 'PRIVO STAR WORK')) {
     throw 'Legacy recovery created the renamed userData folder instead of leaving the legacy one for the app to adopt.'
   }
   Stop-Process -Id $siblingProcess.Id -Force

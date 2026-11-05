@@ -8,10 +8,10 @@ param(
   [string[]]$BuilderArgs
 )
 
-# Builds the STAR Agent NSIS installer for one Windows chip:
+# Builds the PRIVO STAR WORK NSIS installer for one Windows chip:
 #   powershell -File ./scripts/build-windows.ps1 -Arch x64
 #   powershell -File ./scripts/build-windows.ps1 -Arch arm64
-# Output: desktop/build-artifacts/windows-<arch>/STAR-Agent-<version>-win-<arch>.exe
+# Output: desktop/build-artifacts/windows-<arch>/PRIVO-STAR-WORK-<version>-win-<arch>.exe
 #
 # Environment:
 #   SKIP_INSTALL=1        Skip root/desktop dependency installation.

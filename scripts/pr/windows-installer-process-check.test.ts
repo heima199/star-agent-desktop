@@ -131,12 +131,14 @@ SectionEnd
     expect(installerHook).toMatch(
       /fallback process filtering failed[\s\S]*StrCpy \$\{_RETURN\} 0/,
     )
-    // The no-PowerShell fallback also knows the executable name builds from
-    // before the rename shipped, and the smoke's copy of the list stays in sync.
+    // The no-PowerShell fallback also knows the executable names of earlier
+    // builds (STAR Agent 1.0.0-1.1.x, and the one before the first rename), and
+    // the smoke's copy of the list stays in sync.
+    expect(installerHook).toContain('!define /ifndef STAR_AGENT_PREVIOUS_EXE_NAME "STAR Agent.exe"')
     expect(installerHook).toContain('!define /ifndef STAR_AGENT_LEGACY_EXE_NAME "Claude Code Haha.exe"')
-    expect(installerHook).toContain('/C:"${_FILE}" /C:"${STAR_AGENT_LEGACY_EXE_NAME}"')
+    expect(installerHook).toContain('/C:"${_FILE}" /C:"${STAR_AGENT_PREVIOUS_EXE_NAME}" /C:"${STAR_AGENT_LEGACY_EXE_NAME}"')
     const installerSmoke = readFileSync('desktop/scripts/windows-installer-smoke.ps1', 'utf8')
-    expect(installerSmoke).toMatch(/\$installerFallbackImageNames = @\(\s+'STAR Agent\.exe',[\s\S]*?'Claude Code Haha\.exe',/)
+    expect(installerSmoke).toMatch(/\$installerFallbackImageNames = @\(\s+'PRIVO STAR WORK\.exe',[\s\S]*?'STAR Agent\.exe',[\s\S]*?'Claude Code Haha\.exe',/)
     expect(installerHook).toContain('claude-sidecar-x86_64-pc-windows-msvc.exe')
     expect(installerHook).toContain('claude-sidecar-aarch64-pc-windows-msvc.exe')
     expect(installerHook).toContain('/C:"OpenConsole.exe"')
@@ -237,7 +239,7 @@ SectionEnd
     )
 
     expect(installerSmoke).toContain("$siblingDir = \"$installDir Tools\"")
-    expect(installerSmoke).toContain("$siblingProbe = Join-Path $siblingDir 'STAR Agent.exe'")
+    expect(installerSmoke).toContain("$siblingProbe = Join-Path $siblingDir 'PRIVO STAR WORK.exe'")
     expect(installerSmoke).toContain('Sibling-prefix process remains running')
     expect(installerSmoke).toContain('Install-directory parent process detection')
     expect(installerSmoke).toContain('Install-directory process was not terminated')

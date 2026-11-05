@@ -70,7 +70,7 @@ describe('Windows installer recovery prerequisites', () => {
     // The fast path needs a default (or absent) app-mode.json in the current
     // userData folder and in both folder names builds before the rename used.
     const fastPath = installerHook.slice(fastPathStart, installerHook.indexOf('FunctionEnd', fastPathStart))
-    for (const folder of ['${STAR_AGENT_USER_DATA_DIR_NAME}', 'claude-code-desktop', 'Claude Code Haha']) {
+    for (const folder of ['${STAR_AGENT_USER_DATA_DIR_NAME}', '${STAR_AGENT_PREVIOUS_USER_DATA_DIR_NAME}', 'claude-code-desktop', 'Claude Code Haha']) {
       expect(fastPath).toContain(`Push "$R1\\${folder}\\app-mode.json"\n  Call CcHahaModeFileIsDefault\n  Pop $R2\n  StrCmp $R2 "1" 0 cc_haha_skip_recovery_done`)
     }
     expect(installerHook).toContain('FileOpen $R2 "$R0" r')
@@ -101,11 +101,12 @@ describe('Windows installer recovery prerequisites', () => {
       const portableMode = '{\n  "mode": "portable",\n  "portable_dir": "D:\\\\data"\n}'
       const cases: Array<{ name: string, files: Record<string, string>, skip: string }> = [
         { name: 'fresh', files: {}, skip: '1' },
-        { name: 'current-default', files: { 'STAR Agent': defaultMode }, skip: '1' },
-        { name: 'all-default', files: { 'STAR Agent': defaultMode, 'claude-code-desktop': defaultMode, 'Claude Code Haha': defaultMode }, skip: '1' },
-        { name: 'current-portable', files: { 'STAR Agent': portableMode }, skip: '0' },
+        { name: 'current-default', files: { 'PRIVO STAR WORK': defaultMode }, skip: '1' },
+        { name: 'all-default', files: { 'PRIVO STAR WORK': defaultMode, 'STAR Agent': defaultMode, 'claude-code-desktop': defaultMode, 'Claude Code Haha': defaultMode }, skip: '1' },
+        { name: 'current-portable', files: { 'PRIVO STAR WORK': portableMode }, skip: '0' },
+        { name: 'previous-name-portable', files: { 'PRIVO STAR WORK': defaultMode, 'STAR Agent': portableMode }, skip: '0' },
         { name: 'package-name-portable', files: { 'claude-code-desktop': portableMode }, skip: '0' },
-        { name: 'product-name-portable', files: { 'STAR Agent': defaultMode, 'Claude Code Haha': portableMode }, skip: '0' },
+        { name: 'product-name-portable', files: { 'PRIVO STAR WORK': defaultMode, 'Claude Code Haha': portableMode }, skip: '0' },
         { name: 'crlf-default', files: { 'claude-code-desktop': defaultMode.replace(/\n/g, '\r\n') }, skip: '0' },
       ]
       for (const fixture of cases) {
@@ -176,14 +177,14 @@ SectionEnd
     expect(installerHook).not.toMatch(/MessageBox[^\n]*Claude Code Haha/)
 
     // Same folder names, same order, as electron/services/userDataLocation.ts.
-    expect(recoveryHelper).toContain("[string[]]$LegacyUserDataDirNames = @('claude-code-desktop', 'Claude Code Haha')")
-    expect(recoveryHelper).toContain("[string]$ProcessName = 'STAR Agent.exe'")
-    expect(recoveryHelper).toContain("[string[]]$LegacyProcessNames = @('Claude Code Haha.exe')")
+    expect(recoveryHelper).toContain("[string[]]$LegacyUserDataDirNames = @('STAR Agent', 'claude-code-desktop', 'Claude Code Haha')")
+    expect(recoveryHelper).toContain("[string]$ProcessName = 'PRIVO STAR WORK.exe'")
+    expect(recoveryHelper).toContain("[string[]]$LegacyProcessNames = @('STAR Agent.exe', 'Claude Code Haha.exe')")
     expect(recoveryHelper).toMatch(/\$effectiveUserDataDir = Resolve-UserDataDir -UserDataDir \$UserDataDir -LegacyNames \$LegacyUserDataDirNames[\s\S]*-UserDataDir \$effectiveUserDataDir/)
     expect(recoveryHelper).toContain('the former product-name userData folder was not used before the app adopts it')
     expect(recoveryHelper).toContain('an empty current userData folder hid the package-name folder the app adopts first')
 
-    expect(installerSmoke).toContain("(Join-Path $UserDataRoot 'STAR Agent')")
+    expect(installerSmoke).toContain("(Join-Path $UserDataRoot 'PRIVO STAR WORK')")
     expect(installerSmoke).toContain("$legacyUserData = Join-Path $legacyAppData 'claude-code-desktop'")
     expect(installerSmoke).toContain('Invoke-LegacyRecoveryDiagnostic -UserDataRoot $legacyAppData')
   })
