@@ -10,8 +10,9 @@
 
 import { randomUUID } from 'node:crypto'
 
-import { StarApiError, starRequest } from './starClient.js'
+import { StarApiError, starRequest, starUploadForUrl } from './starClient.js'
 import { readStarCatalog, refreshStarCatalog, type StarCatalog } from './starCatalog.js'
+import { cropFrameToRatio } from './starFrameRatio.js'
 import {
   clampImageCount,
   imageCost,
@@ -200,7 +201,7 @@ export async function startStarImageTask(input: StarImageInput, origin: StarTask
   const references = unique(input.references)
   if (references.length > MAX_IMAGE_REFS) throw new StarApiError(`参考图最多 ${MAX_IMAGE_REFS} 张`, 400, 'STAR_TOO_MANY_REFERENCES')
   const catalog = await loadCatalog()
-  const model = pickImageModel(catalog, input.model?.trim() || undefined, references.length > 0)
+  const model = pickImageModel(catalog, input.model?.trim() || undefined, references.length > 0, input.ratio)
   if (!model) throw new StarApiError('没有可用的绘图模型，请在 STAR 后台为应用启用绘图模型', 400, 'STAR_NO_IMAGE_MODEL')
   const count = clampImageCount(input.count)
   const tier = normalizeTier(input.resolution)
@@ -312,8 +313,17 @@ export async function startStarVideoTask(input: StarVideoInput, origin: StarTask
     if (first || last || images.length || videos.length) {
       updateStarTask(task, { status: 'uploading', progress: 3, message: '上传参考素材…' })
     }
-    const firstUrl = first ? await publishStarReference(first, 'image', token, { cwd: origin.cwd }) : undefined
-    const lastUrl = last ? await publishStarReference(last, 'image', token, { cwd: origin.cwd }) : undefined
+    // The console sizes the clip by its first frame, so a frame of another
+    // shape would override the picked ratio: crop it to that ratio first.
+    const frameRatio = type === 'img2video' || type === 'frames2video' ? ratio : undefined
+    const publishFrame = async (raw: string): Promise<string> => {
+      const cropped = await cropFrameToRatio(raw, frameRatio, { cwd: origin.cwd })
+      return cropped
+        ? starUploadForUrl('image', token, cropped.bytes, cropped.name, 'image/png')
+        : publishStarReference(raw, 'image', token, { cwd: origin.cwd })
+    }
+    const firstUrl = first ? await publishFrame(first) : undefined
+    const lastUrl = last ? await publishFrame(last) : undefined
     const imageUrls = await publishStarReferences(images, 'image', token, MAX_VIDEO_IMAGE_REFS, { cwd: origin.cwd })
     const videoUrls = await publishStarReferences(videos, 'video', token, MAX_VIDEO_REFS, { cwd: origin.cwd })
     const allImages = unique([firstUrl, ...imageUrls])

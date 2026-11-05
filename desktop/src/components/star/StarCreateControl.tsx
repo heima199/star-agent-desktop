@@ -28,8 +28,10 @@ import {
 import {
   autoImageModel,
   autoVideoModel,
+  IMAGE_RATIO_IGNORED,
   IMAGE_RATIOS,
   imageModelsFor,
+  imageRatioIgnored,
   nearest,
   referenceVideoAvailable,
   videoCost,
@@ -147,7 +149,7 @@ function SettingsPanel({ slot, mode, params, onClose }: { slot: string; mode: St
   const update = (patch: StarCreateParams) => useStarCreateStore.getState().update(slot, patch)
   const imageModels = spec.kind === 'image' ? imageModelsFor(catalog, mode as ImageMode) : []
   const videoModels = spec.kind === 'video' ? videoModelsFor(catalog, mode as VideoMode) : []
-  const autoImage = spec.kind === 'image' ? autoImageModel(catalog, mode as ImageMode) : undefined
+  const autoImage = spec.kind === 'image' ? autoImageModel(catalog, mode as ImageMode, params.ratio) : undefined
   const duration = params.duration ?? 5
   const autoVideo = spec.kind === 'video' ? autoVideoModel(catalog, mode as VideoMode, duration) : undefined
   const pickedVideo = videoModels.find(model => model.id === params.model) ?? autoVideo
@@ -197,6 +199,7 @@ function SettingsPanel({ slot, mode, params, onClose }: { slot: string; mode: St
                 </button>
               ))}
             </Row>
+            {imageRatioIgnored(pickedImage, params.ratio) ? <p className="-mt-1.5 text-[11px] leading-4 text-[var(--color-warning)]">{IMAGE_RATIO_IGNORED}</p> : null}
             <Row label="张数">
               {[1, 2, 3, 4].map(value => (
                 <button key={value} type="button" className={`${CHIP} ${count === value ? CHIP_ON : CHIP_OFF}`} onClick={() => update({ count: value })}>{value} 张</button>

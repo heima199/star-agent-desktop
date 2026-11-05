@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { StarCatalog, StarVideoModel } from '../../api/star'
-import { acceptsReferenceVideo, autoVideoModel, referenceVideoAvailable, videoModelsFor } from './starStudioModels'
+import { acceptsReferenceVideo, autoImageModel, autoVideoModel, imageRatioIgnored, referenceVideoAvailable, videoModelsFor } from './starStudioModels'
 
 /** The video models of the production catalog (2026-11-01), as the desktop config lists them. */
 const VIDEO: StarVideoModel[] = [
@@ -18,6 +18,33 @@ const CATALOG = { video: VIDEO, image: [], chat: [], brands: [], fetchedAt: 0, v
 function marking(...ids: string[]): StarCatalog {
   return { ...CATALOG, video: VIDEO.map(model => (ids.includes(model.id) ? { ...model, modes: [...(model.modes ?? []), 'reference_video'] } : model)) }
 }
+
+describe('image ratio on 自动', () => {
+  const IMAGE = [
+    { id: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash Image', pricePerImage: 1 },
+    { id: 'gpt-image-2.5', label: 'GPT Image 2.5', pricePerImage: 1 },
+    { id: 'gpt-image-2', label: 'GPT Image 2', pricePerImage: 5 },
+  ]
+  const catalog = { ...CATALOG, image: IMAGE } as StarCatalog
+
+  it('keeps the cheap default when no shape is picked', () => {
+    expect(autoImageModel(catalog, 'text2image')?.id).toBe('gemini-2.5-flash-image')
+    expect(autoImageModel(catalog, 'text2image', 'auto')?.id).toBe('gemini-2.5-flash-image')
+    expect(autoImageModel(catalog, 'text2image', '1:1')?.id).toBe('gemini-2.5-flash-image')
+  })
+
+  it('takes a model that keeps the ratio once one is picked (Gemini 2.5 Flash returns squares)', () => {
+    expect(autoImageModel(catalog, 'text2image', '16:9')?.id).toBe('gpt-image-2.5')
+    expect(autoImageModel(catalog, 'image2image', '3:4')?.id).toBe('gpt-image-2.5')
+  })
+
+  it('warns only when the picked model will not keep a picked shape', () => {
+    expect(imageRatioIgnored(IMAGE[0], '16:9')).toBe(true)
+    expect(imageRatioIgnored(IMAGE[0], '1:1')).toBe(false)
+    expect(imageRatioIgnored(IMAGE[0], 'auto')).toBe(false)
+    expect(imageRatioIgnored(IMAGE[1], '16:9')).toBe(false)
+  })
+})
 
 describe('视频参考 models', () => {
   it('takes no model on `reference` or on its name, so today 视频参考 is off', () => {

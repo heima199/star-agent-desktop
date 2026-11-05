@@ -16,6 +16,20 @@ const PREFERRED_IMAGE_MODELS = [
   'gpt-image-2.5',
 ]
 
+/**
+ * Models whose output ignores the requested size: in production (2026-11-03)
+ * every non-square gemini-2.5-flash-image job came back 1024x1024, while
+ * gpt-image-2.5 and gpt-image-2 kept the size asked for. With a ratio picked,
+ * 自动 takes one of those instead.
+ */
+const RATIO_IGNORED_IMAGE_MODELS = ['gemini-2.5-flash-image']
+const PREFERRED_IMAGE_MODELS_WITH_RATIO = ['gpt-image-2.5', 'gpt-image-2']
+
+function wantsImageShape(ratio: string | undefined): boolean {
+  const value = ratio?.trim()
+  return Boolean(value && value !== 'auto' && value !== '1:1' && RATIO_BASE[value])
+}
+
 const VIDEO_MODE_ALIASES: Record<Exclude<StarVideoType, 'ref2video'>, string[]> = {
   txt2video: ['text', 'txt', 'text2video', 'txt2video'],
   img2video: ['first_frame', 'image', 'img', 'img2video', 'image2video', 'reference', 'multi_image'],
@@ -68,6 +82,48 @@ function parseSize(value: string): [number, number] | null {
   return match ? [Number(match[1]), Number(match[2])] : null
 }
 
+/**
+ * The console prices an image by its longest side (≤1536 is 1k, ≤2304 is 2k,
+ * above is 4k), whatever tier the job names.
+ */
+const TIER_LONGEST: Record<'1k' | '2k' | '4k', number> = { '1k': 1536, '2k': 2304, '4k': 3840 }
+const GPT_IMAGE_MAX_PIXELS = 8_294_400
+
+export function sizeTier(width: number, height: number): '1k' | '2k' | '4k' {
+  const longest = Math.max(width, height)
+  return longest <= TIER_LONGEST['1k'] ? '1k' : longest <= TIER_LONGEST['2k'] ? '2k' : '4k'
+}
+
+/**
+ * GPT Image models draw any size (multiples of 16) and keep its shape: in
+ * production 1024x768 came back 1448x1086 and 768x1024 came back as asked.
+ * Their catalog list has no 16:9 size below 4k, so the list alone turned a
+ * 16:9 job into 3:2 (seen 2026-11-05). `gpt-image-gemini-*` are Gemini models
+ * behind that name and keep the list.
+ */
+function drawsAnySize(model: StarImageModel | undefined): boolean {
+  return Boolean(model && /^gpt-image-\d/i.test(model.id))
+}
+
+/** "16:9" → 16/9 (the exact ratio, not RATIO_BASE's rounded pixels). */
+function ratioValue(key: string): number {
+  const [w, h] = key.split(':').map(Number) as [number, number]
+  return w / h
+}
+
+/** The largest WIDTHxHEIGHT of `target` ratio inside `tier`, in multiples of 16. */
+function exactSize(target: number, tier: '1k' | '2k' | '4k'): [number, number] {
+  const longest = TIER_LONGEST[tier]
+  let width = target >= 1 ? longest : longest * target
+  let height = target >= 1 ? longest / target : longest
+  if (width * height > GPT_IMAGE_MAX_PIXELS) {
+    const scale = Math.sqrt(GPT_IMAGE_MAX_PIXELS / (width * height))
+    width *= scale
+    height *= scale
+  }
+  return [Math.floor(width / 16) * 16, Math.floor(height / 16) * 16]
+}
+
 /** WIDTHxHEIGHT for a ratio and tier, chosen from the model's own size list when it has one. */
 export function pickImageSize(model: StarImageModel | undefined, ratio?: string, resolution?: string): string {
   const listed = (model?.sizes ?? []).map(parseSize).filter((item): item is [number, number] => item !== null)
@@ -77,6 +133,16 @@ export function pickImageSize(model: StarImageModel | undefined, ratio?: string,
     return `${listed[0]![0]}x${listed[0]![1]}`
   }
   const tier = normalizeTier(resolution) ?? '1k'
+  // A listed size of this exact shape and price tier, closest to the tier's size.
+  const target = ratioValue(ratio!.trim())
+  const exact = listed
+    .filter(([w, h]) => Math.abs(Math.log((w / h) / target)) < Math.log(1.02) && sizeTier(w, h) === tier)
+    .sort((a, b) => Math.abs(Math.log((a[0] * a[1]) / TIER_PIXELS[tier]!)) - Math.abs(Math.log((b[0] * b[1]) / TIER_PIXELS[tier]!)))[0]
+  if (exact) return `${exact[0]}x${exact[1]}`
+  if (drawsAnySize(model)) {
+    const [w, h] = exactSize(target, tier)
+    return `${w}x${h}`
+  }
   const targetRatio = base[0] / base[1]
   const targetPixels = TIER_PIXELS[tier]!
   if (listed.length) {
@@ -100,10 +166,19 @@ export function pickImageModel(
   catalog: StarCatalog | null,
   requested: string | undefined,
   needsEdit: boolean,
+  ratio?: string,
 ): StarImageModel | undefined {
   const list = catalog?.image ?? []
   if (requested) return list.find(model => model.id === requested) ?? { id: requested, label: requested }
   const candidates = needsEdit ? list.filter(model => model.supportsEdit !== false) : list
+  if (wantsImageShape(ratio)) {
+    const keeping = candidates.filter(model => !RATIO_IGNORED_IMAGE_MODELS.includes(model.id))
+    for (const id of [...PREFERRED_IMAGE_MODELS_WITH_RATIO, ...PREFERRED_IMAGE_MODELS]) {
+      const found = keeping.find(model => model.id === id)
+      if (found) return found
+    }
+    if (keeping[0]) return keeping[0]
+  }
   for (const id of PREFERRED_IMAGE_MODELS) {
     const found = candidates.find(model => model.id === id)
     if (found) return found

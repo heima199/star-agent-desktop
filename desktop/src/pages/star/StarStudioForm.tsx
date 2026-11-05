@@ -11,8 +11,10 @@ import {
   autoImageModel,
   autoVideoModel,
   IMAGE_MODES,
+  IMAGE_RATIO_IGNORED,
   IMAGE_RATIOS,
   imageModelsFor,
+  imageRatioIgnored,
   nearest,
   REFERENCE_VIDEO_PAUSED,
   referenceVideoAvailable,
@@ -149,7 +151,8 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
 
   const imageModels = useMemo(() => imageModelsFor(catalog, imageMode), [catalog, imageMode])
   const videoModels = useMemo(() => videoModelsFor(catalog, videoMode), [catalog, videoMode])
-  const chosenImage = model && kind === 'image' ? imageModels.find(item => item.id === model) : autoImageModel(catalog, imageMode)
+  const chosenImage = model && kind === 'image' ? imageModels.find(item => item.id === model) : autoImageModel(catalog, imageMode, ratio)
+  const ratioIgnored = kind === 'image' && imageRatioIgnored(chosenImage, ratio)
   const chosenVideo = model && kind === 'video' ? videoModels.find(item => item.id === model) : autoVideoModel(catalog, videoMode, duration)
   const durations = chosenVideo?.durations?.length ? chosenVideo.durations : [5, 10]
   const ratios = chosenVideo?.ratios?.length ? chosenVideo.ratios : ['16:9', '9:16', '1:1', '4:3', '3:4']
@@ -308,6 +311,7 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
           <div>
             <Label>比例</Label>
             <div className="flex flex-wrap gap-1.5">{IMAGE_RATIOS.map(item => <button key={item} type="button" className={chip(ratio === item)} onClick={() => setRatio(item)}>{item === 'auto' ? '自动' : item}</button>)}</div>
+            {ratioIgnored ? <div className="mt-1.5 text-[12px] leading-5 text-[var(--color-warning)]">{IMAGE_RATIO_IGNORED}</div> : null}
           </div>
           <div className="flex gap-6">
             <div>

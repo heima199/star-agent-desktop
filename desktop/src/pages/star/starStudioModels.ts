@@ -51,6 +51,26 @@ export const REFERENCE_VIDEO_PAUSED = '参考视频生成暂未开放，可以�
 
 const PREFERRED_IMAGE = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gpt-image-2', 'gpt-image-2.5']
 
+/**
+ * Models whose output ignores the requested size. In production (2026-11-03)
+ * every non-square gemini-2.5-flash-image job came back 1024x1024 (3:2, 4:3,
+ * 3:4 alike), while gpt-image-2.5 and gpt-image-2 kept the size they were
+ * asked for. With a ratio picked, 自动 takes one of those instead.
+ */
+const RATIO_IGNORED_IMAGE = ['gemini-2.5-flash-image']
+const PREFERRED_IMAGE_WITH_RATIO = ['gpt-image-2.5', 'gpt-image-2']
+
+/** Whether `ratio` asks for a shape other than the model's default square. */
+function wantsShape(ratio: string | undefined): boolean {
+  const value = ratio?.trim()
+  return Boolean(value && value !== 'auto' && value !== '1:1')
+}
+
+/** Whether the model's output keeps a picked ratio (false: it comes back square). */
+export function imageKeepsRatio(model: StarImageModel | undefined): boolean {
+  return !model || !RATIO_IGNORED_IMAGE.includes(model.id)
+}
+
 export function videoSupports(model: StarVideoModel, mode: VideoMode): boolean {
   if (mode === 'video2video') return acceptsReferenceVideo(model)
   if (!model.modes?.length) return true
@@ -74,9 +94,24 @@ export function videoModelsFor(catalog: StarCatalog | null, mode: VideoMode): St
 }
 
 /** The model the server picks when the user leaves the model on 自动. */
-export function autoImageModel(catalog: StarCatalog | null, mode: ImageMode): StarImageModel | undefined {
+export function autoImageModel(catalog: StarCatalog | null, mode: ImageMode, ratio?: string): StarImageModel | undefined {
   const list = imageModelsFor(catalog, mode)
+  if (wantsShape(ratio)) {
+    const keeping = list.filter(imageKeepsRatio)
+    const picked = PREFERRED_IMAGE_WITH_RATIO.map(id => keeping.find(model => model.id === id)).find(Boolean)
+      ?? PREFERRED_IMAGE.map(id => keeping.find(model => model.id === id)).find(Boolean)
+      ?? keeping[0]
+    if (picked) return picked
+  }
   return PREFERRED_IMAGE.map(id => list.find(model => model.id === id)).find(Boolean) ?? list[0]
+}
+
+/** Shown when the picked image model would return a square image for a picked ratio. */
+export const IMAGE_RATIO_IGNORED = '这个模型不支持指定比例，会生成方图；要指定比例请选「自动」或 GPT Image 模型'
+
+/** Whether to warn that `model` will not keep `ratio`. */
+export function imageRatioIgnored(model: StarImageModel | undefined, ratio: string | undefined): boolean {
+  return wantsShape(ratio) && !imageKeepsRatio(model)
 }
 
 export function autoVideoModel(catalog: StarCatalog | null, mode: VideoMode, duration: number): StarVideoModel | undefined {

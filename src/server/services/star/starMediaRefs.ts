@@ -46,6 +46,11 @@ function extensionFor(mime: string): string {
   return entry?.[0] ?? '.bin'
 }
 
+/** The bytes of a reference given as a local path, data URL or http(s) URL. */
+export async function readStarReference(raw: string, kind: 'image' | 'video', cwd?: string): Promise<{ bytes: Uint8Array; mime: string; name: string }> {
+  return readReference(raw.trim().replace(/^file:\/\//i, ''), kind, cwd)
+}
+
 async function readReference(raw: string, kind: 'image' | 'video', cwd?: string): Promise<{ bytes: Uint8Array; mime: string; name: string }> {
   const dataMatch = DATA_URL_RE.exec(raw)
   if (dataMatch) {
