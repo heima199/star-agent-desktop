@@ -3,7 +3,7 @@ set -euo pipefail
 
 # install-macos-unsigned.sh
 #
-# Installs the unsigned macOS build of STAR Agent from a DMG that sits next to
+# Installs the unsigned macOS build of PRIVO STAR WORK from a DMG that sits next to
 # this script (download both into one folder, e.g. ~/Downloads, then run this
 # script).
 #
@@ -14,12 +14,16 @@ set -euo pipefail
 #
 # Usage:
 #   bash install-macos-unsigned.sh                       # auto-pick the DMG next to this script
-#   bash install-macos-unsigned.sh /path/to/STAR-Agent-1.0.0-mac-arm64.dmg
+#   bash install-macos-unsigned.sh /path/to/PRIVO-STAR-WORK-1.2.0-mac-arm64.dmg
 
-APP_NAME="STAR Agent.app"
+APP_NAME="PRIVO STAR WORK.app"
 APP_PATH="/Applications/${APP_NAME}"
-# Builds from before the rename installed under this legacy name. That copy is
-# replaced as well (moved to the Trash), without showing its name.
+# 1.0.0-1.1.x installed as STAR Agent. That copy is replaced as well (moved to
+# the Trash); the app adopts its data folder on first start.
+PREVIOUS_APP_NAME="STAR Agent"
+PREVIOUS_APP_PATH="/Applications/${PREVIOUS_APP_NAME}.app"
+# Builds from before the first rename installed under this legacy name. That
+# copy is replaced as well (moved to the Trash), without showing its name.
 LEGACY_APP_NAME="Claude Code Haha"
 LEGACY_APP_PATH="/Applications/${LEGACY_APP_NAME}.app"
 
@@ -34,7 +38,7 @@ find_dmg() {
   arch="$(uname -m)"
 
   shopt -s nullglob
-  local matches=("${dir}"/STAR-Agent-*-mac-*.dmg)
+  local matches=("${dir}"/PRIVO-STAR-WORK-*-mac-*.dmg)
   shopt -u nullglob
 
   if [ "${#matches[@]}" -eq 0 ]; then
@@ -69,9 +73,9 @@ main() {
   local dmg="${1:-}"
   if [ -z "$dmg" ]; then
     if ! dmg="$(find_dmg "$base_dir")"; then
-      echo "No STAR Agent macOS DMG found next to this script."
+      echo "No PRIVO STAR WORK macOS DMG found next to this script."
       echo "Download the DMG into the same folder as this script, then run it again."
-      echo "Usage: bash install-macos-unsigned.sh /path/to/STAR-Agent-1.0.0-mac-arm64.dmg"
+      echo "Usage: bash install-macos-unsigned.sh /path/to/PRIVO-STAR-WORK-1.2.0-mac-arm64.dmg"
       exit 1
     fi
   fi
@@ -103,29 +107,35 @@ main() {
     exit 1
   fi
 
-  osascript -e 'quit app "STAR Agent"' >/dev/null 2>&1 || true
+  osascript -e 'quit app "PRIVO STAR WORK"' >/dev/null 2>&1 || true
 
   local stamp
   stamp="$(date +%Y%m%d%H%M%S)"
 
   if [ -d "$APP_PATH" ]; then
     local backup
-    backup="${HOME}/.Trash/STAR Agent.${stamp}.app"
+    backup="${HOME}/.Trash/PRIVO STAR WORK.${stamp}.app"
     echo "Moving existing app to: $backup"
     mv "$APP_PATH" "$backup"
+  fi
+
+  if [ -d "$PREVIOUS_APP_PATH" ]; then
+    osascript -e "quit app \"${PREVIOUS_APP_NAME}\"" >/dev/null 2>&1 || true
+    echo "Moving STAR Agent to the Trash."
+    mv "$PREVIOUS_APP_PATH" "${HOME}/.Trash/STAR Agent.${stamp}.app"
   fi
 
   if [ -d "$LEGACY_APP_PATH" ]; then
     osascript -e "quit app \"${LEGACY_APP_NAME}\"" >/dev/null 2>&1 || true
     echo "Moving the previous version to the Trash."
-    mv "$LEGACY_APP_PATH" "${HOME}/.Trash/STAR Agent (previous).${stamp}.app"
+    mv "$LEGACY_APP_PATH" "${HOME}/.Trash/PRIVO STAR WORK (previous).${stamp}.app"
   fi
 
   echo "Installing to: $APP_PATH"
   ditto "$app_in_volume" "$APP_PATH"
   xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
 
-  echo "Opening STAR Agent..."
+  echo "Opening PRIVO STAR WORK..."
   open "$APP_PATH"
 }
 
