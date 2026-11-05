@@ -21,6 +21,13 @@ on:
 permissions:
   contents: read
 
+# The installers go straight into a draft release named dev-build-<run id>,
+# not into Actions artifacts: artifact storage has a quota (it filled up on
+# 2026-11-05 and blocked every build for hours), release assets do not count
+# against it. A draft creates no git tag and is visible only to people with
+# write access. The draft is created first, each build job adds its own
+# installers, and the last job writes one SHA256SUMS.txt for all of them.
+# A draft without SHA256SUMS.txt is from a run that did not finish.
 concurrency:
   group: build-desktop-dev-${{ github.ref }}
   cancel-in-progress: true
@@ -28,9 +35,24 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      release_tag: ${{ steps.draft.outputs.tag }}
     steps:
+      - name: Create the draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="dev-build-${{ github.run_id }}"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+            --title "Dev build ${{ github.run_id }}" \
+            --notes "Unsigned installers from Build Desktop (Dev) run ${{ github.run_id }}, commit $GITHUB_SHA."
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - id: set-matrix
         run: |
           ALL='[{"platform":"macos-latest","target_triple":"aarch64-apple-darwin","builder_args":"--mac dmg zip --arm64","label":"macOS-ARM64","artifact_name":"macos-arm64","smoke_platform":"macos","arch":"arm64"},{"platform":"macos-latest","target_triple":"x86_64-apple-darwin","builder_args":"--mac dmg zip --x64","label":"macOS-x64","artifact_name":"macos-x64","smoke_platform":"macos","arch":"x64"},{"platform":"windows-latest","target_triple":"x86_64-pc-windows-msvc","builder_args":"--win nsis --x64","label":"Windows-x64","artifact_name":"windows-x64","smoke_platform":"windows","arch":"x64"},{"platform":"windows-latest","target_triple":"aarch64-pc-windows-msvc","builder_args":"--win nsis --arm64","label":"Windows-ARM64","artifact_name":"windows-arm64","smoke_platform":"windows","arch":"arm64"},{"platform":"ubuntu-22.04","target_triple":"x86_64-unknown-linux-gnu","builder_args":"--linux AppImage deb --x64","label":"Linux-x64","artifact_name":"linux-x64","smoke_platform":"linux","arch":"x64"},{"platform":"ubuntu-22.04-arm","target_triple":"aarch64-unknown-linux-gnu","builder_args":"--linux AppImage deb --arm64","label":"Linux-ARM64","artifact_name":"linux-arm64","smoke_platform":"linux","arch":"arm64"}]'
@@ -59,6 +81,8 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     name: Build (${{ matrix.label }})
+    permissions:
+      contents: write
     # A stuck step otherwise holds a (billed) runner for the 6-hour default.
     timeout-minutes: 90
 
@@ -320,10 +344,55 @@ jobs:
           echo "staging_dir=$STAGING" >> "$GITHUB_OUTPUT"
           ls -lh "$STAGING/" 2>/dev/null || true
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: STAR-Agent-v${{ steps.version.outputs.version }}-${{ matrix.artifact_name }}
-          path: ${{ steps.collect.outputs.staging_dir }}
-          retention-days: 7
-          if-no-files-found: warn
+      # The installers (and the macOS install script) go into the run's draft
+      # release, with this job's checksums. The updater .yml files stay out:
+      # both chips of a platform write one of the same name, and the draft
+      # release never held them.
+      - name: Upload installers to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.release_tag }}
+          STAGING: ${{ steps.collect.outputs.staging_dir }}
+        run: |
+          set -euo pipefail
+          cd "$STAGING"
+          files=()
+          for file in *.dmg *.exe *.deb *.AppImage install-macos-unsigned.sh; do
+            [ -f "$file" ] && files+=("$file")
+          done
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No installer was built in $STAGING"
+            exit 1
+          fi
+          sums="SHA256SUMS-${{ matrix.artifact_name }}.txt"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -- "${files[@]}" > "$sums"
+          else
+            shasum -a 256 -- "${files[@]}" > "$sums"
+          fi
+          cat "$sums"
+          gh release upload "$TAG" "${files[@]}" "$sums" --repo "$GITHUB_REPOSITORY" --clobber
+
+  checksums:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Write SHA256SUMS.txt for the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p sums
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'SHA256SUMS-*.txt' --dir sums
+          # Both macOS jobs list install-macos-unsigned.sh; keep one line per file.
+          cat sums/*.txt | sed 's/ \*/  /' | sort -k2 -u > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber
+          for part in sums/*.txt; do
+            gh release delete-asset "$TAG" "$(basename "$part")" --repo "$GITHUB_REPOSITORY" --yes
+          done
+          echo "Draft release: $TAG"
