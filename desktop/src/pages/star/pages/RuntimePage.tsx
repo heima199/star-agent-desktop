@@ -18,9 +18,11 @@ import {
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useStarBrand } from '@/stores/starBrandStore'
+import { useStarStore } from '@/stores/starStore'
 import { useTabStore } from '@/stores/tabStore'
 import { STAR_STUDIO_TAB_ID, starStudioTabTitle } from '@/components/star/starTabs'
 import { STAR_MODE_LABELS } from '../starMedia'
+import { mediaModelLabel } from '../starStudioModels'
 import { MemoryRuntimePage } from './MemoryRuntimePage'
 import { ErrorRow, LoadingRow } from './StarPageShell'
 
@@ -314,6 +316,7 @@ function PluginList({ items, signedIn }: { items: StarRuntimePlugin[]; signedIn:
 }
 
 function TaskList({ tasks, now }: { tasks: StarRuntimeTask[]; now: number }) {
+  const catalog = useStarStore(s => s.catalog)
   if (tasks.length === 0) {
     return (
       <div className="rounded-[var(--radius-lg)] border border-dashed border-[var(--color-border)] px-4 py-6 text-center text-[12px] text-[var(--color-text-tertiary)]">
@@ -332,7 +335,7 @@ function TaskList({ tasks, now }: { tasks: StarRuntimeTask[]; now: number }) {
             <div className="flex min-w-0 items-center gap-2">
               <Image size={14} strokeWidth={1.8} className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true" />
               <span className="shrink-0 text-[var(--color-text-primary)]">{STAR_MODE_LABELS[task.mode] ?? task.mode}</span>
-              <span className="min-w-0 flex-1 truncate text-[var(--color-text-tertiary)]">{task.model}</span>
+              <span className="min-w-0 flex-1 truncate text-[var(--color-text-tertiary)]">{mediaModelLabel(catalog, task.model)}</span>
               <span className="shrink-0 text-[11px] text-[var(--color-text-tertiary)]">{task.source === 'agent' ? '来自对话' : '创作台'}</span>
               <span className="w-[76px] shrink-0 text-right tabular-nums text-[11px] text-[var(--color-text-tertiary)]">{formatDuration(end - task.createdAt)}</span>
               <Chip tone={state.tone} pulse={active}>{state.label}</Chip>

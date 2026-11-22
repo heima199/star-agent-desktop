@@ -7,7 +7,7 @@ import { useStarBrand } from '../../stores/starBrandStore'
 import { isStarTaskActive, useStarStore } from '../../stores/starStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useUIStore } from '../../stores/uiStore'
-import { STAR_MODE_LABELS, StarOutputThumb, StarOutputViewer, useStarOutputUrl } from '../../pages/star/starMedia'
+import { STAR_MODE_LABELS, StarOutputThumb, StarOutputViewer, useStarModelLabel, useStarOutputUrl } from '../../pages/star/starMedia'
 import { STAR_STUDIO_TAB_ID, starStudioTabTitle } from './starTabs'
 import { StarVideoPlayer } from './StarVideoPlayer'
 
@@ -115,6 +115,7 @@ function VideoOutput({ task, index }: { task: StarMediaTask; index: number }) {
 
 function StarCallCard({ item }: { item: StarChatMediaItem }) {
   const task = useCallTask(item)
+  const modelLabel = useStarModelLabel(task?.model ?? '')
   const [viewing, setViewing] = useState<number | null>(null)
   const tool = /__star_([a-z_]+)$/.exec(item.toolName)?.[1] ?? ''
   const isVideo = item.toolName.includes('star-video')
@@ -149,7 +150,7 @@ function StarCallCard({ item }: { item: StarChatMediaItem }) {
             ? <Loader2 size={14} strokeWidth={1.75} className="shrink-0 animate-spin text-[var(--color-brand)]" aria-hidden="true" />
             : <Icon size={14} strokeWidth={1.75} className="shrink-0 text-[var(--color-brand)]" aria-hidden="true" />}
         <span className={`truncate ${failed ? 'text-[var(--color-on-error-container)]' : 'text-[var(--color-text-secondary)]'}`}>{brand.name} · {status}</span>
-        {task?.model ? <span className="shrink-0 truncate">· {task.model}</span> : null}
+        {task?.model ? <span className="shrink-0 truncate">· {modelLabel}</span> : null}
         {task?.estimatedCredits !== undefined ? <span className="shrink-0 tabular-nums">· 约 {task.estimatedCredits} 积分</span> : null}
         {running && task ? <span className="ml-auto shrink-0 tabular-nums">{task.progress}%</span> : null}
       </div>

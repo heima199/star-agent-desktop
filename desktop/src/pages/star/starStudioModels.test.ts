@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { StarCatalog, StarVideoModel } from '../../api/star'
-import { acceptsReferenceVideo, autoImageModel, autoVideoModel, imageRatioIgnored, imageTierCost, imageTierNote, referenceVideoAvailable, videoCostAt, videoModelsFor } from './starStudioModels'
+import { acceptsReferenceVideo, autoImageModel, autoVideoModel, imageModelsFor, imageModeWith, imageRatioIgnored, imageTierCost, imageTierNote, keptModel, listedVideoCost, mediaModelLabel, referenceRefusal, referenceRoom, referenceSlot, referenceVideoAvailable, risingDurations, risingResolutions, shownRows, videoCostAt, videoModelsFor, videoRatioLabel, type VideoMode } from './starStudioModels'
 
 /** The video models of the production catalog (2026-11-01), as the desktop config lists them. */
 const VIDEO: StarVideoModel[] = [
@@ -99,5 +99,128 @@ describe('prices follow 清晰度, 分辨率 and 时长', () => {
     expect(imageTierNote('4k', undefined, '16:9')).toBeNull()
     expect(imageTierNote('4k', '1k', '1:1')).toContain('最高出 1K')
     expect(imageTierNote('4k', '1k', 'auto')).toContain('请选一个比例')
+  })
+
+  it('shows durations rising, whatever order the console lists them in', () => {
+    const listed = [6, 4, 5, 8, 10, 12, 15]
+    expect(risingDurations(listed)).toEqual([4, 5, 6, 8, 10, 12, 15])
+    expect(listed[0]).toBe(6)
+  })
+
+  it('shows resolutions from the smallest to the largest', () => {
+    expect(risingResolutions(['768P', '1080P', '2K', '480P'])).toEqual(['480P', '768P', '1080P', '2K'])
+    expect(risingResolutions(['4K', '720p', '1080P'])).toEqual(['720p', '1080P', '4K'])
+    expect(risingResolutions(['原画', '1080P', '高清'])).toEqual(['1080P', '原画', '高清'])
+  })
+
+  it('lists the picked video model at the price the console answered, the others by the rule', () => {
+    const h3 = VIDEO.find(model => model.id === 'MiniMax-H3')!
+    const fast = VIDEO.find(model => model.id === 'sd-2-fast')!
+    expect(listedVideoCost(h3, 'MiniMax-H3', 7, 4, '480P')).toBe(7)
+    expect(listedVideoCost(h3, 'MiniMax-H3', undefined, 4, '480P')).toBe(10)
+    expect(listedVideoCost(h3, '', 7, 4, '480P')).toBe(10)
+    expect(listedVideoCost(fast, 'MiniMax-H3', 7, 4, '480P')).toBe(38)
+  })
+
+  it('names the ratio words in Chinese and leaves the numbers alone', () => {
+    expect(videoRatioLabel('adaptive')).toBe('自适应')
+    expect(videoRatioLabel('auto')).toBe('自动')
+    expect(videoRatioLabel('16:9')).toBe('16:9')
+  })
+})
+
+// Picking the 3-credit image model and then 「用作参考」 (文生图 to 图生图) put the
+// form back on 自动, the 10-credit model, without a word (2026-11-22).
+describe('the picked model across modes', () => {
+  const IMAGE = [
+    { id: 'gpt-image-2', label: 'GPT Image 2', pricePerImage: 10 },
+    { id: 'gemini-3.1-flash-image', label: 'Gemini 3.1 Flash Image', pricePerImage: 3 },
+    { id: 'draw-only', label: 'Draw Only', pricePerImage: 1, supportsEdit: false },
+  ]
+  const catalog = { ...CATALOG, image: IMAGE } as StarCatalog
+
+  it('stays picked in a mode that offers it too', () => {
+    expect(keptModel('gemini-3.1-flash-image', imageModelsFor(catalog, 'image2image'))).toBe('gemini-3.1-flash-image')
+    expect(keptModel('MiniMax-H3', videoModelsFor(CATALOG, 'image2video'))).toBe('MiniMax-H3')
+  })
+
+  it('goes back to 自动 in a mode that does not offer it', () => {
+    expect(keptModel('draw-only', imageModelsFor(catalog, 'image2image'))).toBe('')
+    expect(keptModel('gemini-3.1-flash-image', videoModelsFor(CATALOG, 'text2video'))).toBe('')
+    expect(keptModel('wan2.2-s2v', videoModelsFor(CATALOG, 'text2video'))).toBe('')
+  })
+
+  it('has nothing picked on 自动, or while no catalog lists the model', () => {
+    expect(keptModel('', imageModelsFor(catalog, 'text2image'))).toBe('')
+    expect(keptModel('gpt-image-2', imageModelsFor(null, 'text2image'))).toBe('')
+  })
+
+  it('is shown under the name of the model list, not under its id', () => {
+    expect(mediaModelLabel(catalog, 'gemini-3.1-flash-image')).toBe('Gemini 3.1 Flash Image')
+    expect(mediaModelLabel(catalog, 'MiniMax-H3')).toBe('MiniMax H3')
+    expect(mediaModelLabel(catalog, 'a-model-no-longer-listed')).toBe('a-model-no-longer-listed')
+    expect(mediaModelLabel(null, 'gpt-image-2')).toBe('gpt-image-2')
+  })
+})
+
+// 「用作参考」 on a picture while the form was on 视频参考 put it in the 首帧 row, which
+// that mode does not show, and the request then took it along; pressing it twice
+// on one output attached the output twice (2026-11-22).
+describe('「用作参考」', () => {
+  const VIDEO_MODES_ALL: VideoMode[] = ['text2video', 'image2video', 'frames2video', 'multi2video', 'video2video']
+
+  it('puts a picture in the row the form shows', () => {
+    expect(referenceSlot('image', 'image', 'text2video')).toEqual({ slot: 'refs', max: 16 })
+    expect(referenceSlot('image', 'video', 'text2video')).toEqual({ slot: 'first', max: 1 })
+    expect(referenceSlot('image', 'video', 'image2video')).toEqual({ slot: 'first', max: 1 })
+    expect(referenceSlot('image', 'video', 'frames2video')).toEqual({ slot: 'first', max: 1 })
+    expect(referenceSlot('image', 'video', 'multi2video')).toEqual({ slot: 'refs', max: 8 })
+    expect(referenceSlot('image', 'video', 'video2video')).toEqual({ slot: 'refs', max: 8 })
+  })
+
+  it('puts a video with the reference videos, wherever the form is', () => {
+    expect(referenceSlot('video', 'image', 'text2video')).toEqual({ slot: 'videos', max: 3 })
+    expect(referenceSlot('video', 'video', 'multi2video')).toEqual({ slot: 'videos', max: 3 })
+  })
+
+  it('shows, checks and sends the same rows in every mode', () => {
+    expect(shownRows('image', 'text2image', 'video2video')).toEqual({ refs: 0, first: 0, last: 0, videos: 0 })
+    expect(shownRows('image', 'image2image', 'text2video')).toEqual({ refs: 1, first: 0, last: 0, videos: 0 })
+    expect(shownRows('image', 'multi2image', 'text2video')).toEqual({ refs: 16, first: 0, last: 0, videos: 0 })
+    expect(shownRows('video', 'multi2image', 'text2video')).toEqual({ refs: 0, first: 0, last: 0, videos: 0 })
+    expect(shownRows('video', 'text2image', 'image2video')).toEqual({ refs: 0, first: 1, last: 0, videos: 0 })
+    expect(shownRows('video', 'text2image', 'frames2video')).toEqual({ refs: 0, first: 1, last: 1, videos: 0 })
+    expect(shownRows('video', 'text2image', 'multi2video')).toEqual({ refs: 8, first: 0, last: 0, videos: 0 })
+    // 视频参考 shows no 首帧 row, so a first frame left over from 图生视频 is not sent with it.
+    expect(shownRows('video', 'text2image', 'video2video')).toEqual({ refs: 8, first: 0, last: 0, videos: 3 })
+  })
+
+  it('puts a picture only in a row the mode shows', () => {
+    for (const mode of VIDEO_MODES_ALL) {
+      const { slot } = referenceSlot('image', 'video', mode)
+      // 文生视频 moves to 图生视频 when it takes a picture.
+      const rows = shownRows('video', 'text2image', slot === 'first' && mode === 'text2video' ? 'image2video' : mode)
+      expect(rows[slot]).toBeGreaterThan(0)
+    }
+  })
+
+  it('attaches one output once, and says so instead of dropping it', () => {
+    expect(referenceRoom([], 'a', 3)).toBe('room')
+    expect(referenceRoom(['a'], 'b', 3)).toBe('room')
+    expect(referenceRoom(['a', undefined], 'a', 3)).toBe('attached')
+    expect(referenceRoom(['a', 'b', 'c'], 'd', 3)).toBe('full')
+    expect(referenceRoom(['a', 'b', 'c'], 'c', 3)).toBe('attached')
+    expect(referenceRefusal('image', 'attached', 16)).toBe('这张图片已经在参考里了')
+    expect(referenceRefusal('video', 'attached', 3)).toBe('这个视频已经在参考里了')
+    expect(referenceRefusal('image', 'full', 8)).toContain('最多 8 张')
+    expect(referenceRefusal('video', 'full', 3)).toContain('最多 3 个')
+  })
+
+  it('moves 图片 to 图生图 for one picture and to 多图参考 for more', () => {
+    expect(imageModeWith('text2image', 1)).toBe('image2image')
+    expect(imageModeWith('image2image', 1)).toBe('image2image')
+    expect(imageModeWith('image2image', 2)).toBe('multi2image')
+    expect(imageModeWith('text2image', 3)).toBe('multi2image')
+    expect(imageModeWith('multi2image', 1)).toBe('multi2image')
   })
 })

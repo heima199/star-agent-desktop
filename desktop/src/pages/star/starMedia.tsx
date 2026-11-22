@@ -6,6 +6,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useStarStore } from '../../stores/starStore'
 import { starApi, starErrorText, type StarMediaTask } from '../../api/star'
 import { StarVideoPlayer } from '../../components/star/StarVideoPlayer'
+import { mediaModelLabel } from './starStudioModels'
 
 const blobCache = new Map<string, Promise<string>>()
 
@@ -54,6 +55,11 @@ const STATUS_LABELS: Record<StarMediaTask['status'], string> = {
   downloading: '下载结果',
   succeeded: '已完成',
   failed: '失败',
+}
+
+/** A job's model under the name the model list gives it (a job records the model's id). */
+export function useStarModelLabel(id: string): string {
+  return useStarStore(s => mediaModelLabel(s.catalog, id))
 }
 
 function toast(type: 'success' | 'error' | 'info', message: string) {
@@ -105,6 +111,7 @@ export function StarOutputThumb({ task, index, onOpen, className = '' }: { task:
 /** Full-size preview of one output. */
 export function StarOutputViewer({ task, index, onClose }: { task: StarMediaTask; index: number; onClose: () => void }) {
   const { url } = useStarOutputUrl(task, index)
+  const modelLabel = useStarModelLabel(task.model)
   const output = task.outputs[index]
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
@@ -123,7 +130,7 @@ export function StarOutputViewer({ task, index, onClose }: { task: StarMediaTask
       </div>
       <div className="flex max-w-[90vw] flex-wrap items-center justify-center gap-2 text-[12px] text-[var(--color-lightbox-control-bg)]" onClick={event => event.stopPropagation()}>
         <span className="max-w-[60vw] truncate opacity-90">{task.prompt}</span>
-        <span className="opacity-90">· {task.model}</span>
+        <span className="opacity-90">· {modelLabel}</span>
         {output.file ? <button type="button" className={VIEWER_BUTTON} onClick={() => void getDesktopHost().shell.openPath(dirname(output.file!))}>打开所在文件夹</button> : null}
         <button type="button" className={VIEWER_BUTTON} onClick={() => void navigator.clipboard.writeText(output.url).then(() => toast('success', '链接已复制'))}>复制链接</button>
       </div>
@@ -134,6 +141,7 @@ export function StarOutputViewer({ task, index, onClose }: { task: StarMediaTask
 /** One job in the task center: live progress while running, results when done. */
 export function StarTaskCard({ task, onUseAsReference }: { task: StarMediaTask; onUseAsReference?: (url: string, kind: 'image' | 'video') => void }) {
   const [viewing, setViewing] = useState<number | null>(null)
+  const modelLabel = useStarModelLabel(task.model)
   const active = task.status !== 'succeeded' && task.status !== 'failed'
   const remove = async () => {
     try {
@@ -157,7 +165,7 @@ export function StarTaskCard({ task, onUseAsReference }: { task: StarMediaTask; 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-[var(--color-text-tertiary)]">
             <span className="font-medium text-[var(--color-text-secondary)]">{STAR_MODE_LABELS[task.mode] ?? task.mode}</span>
-            <span>{task.model}</span>
+            <span>{modelLabel}</span>
             {task.estimatedCredits !== undefined ? <span>约 {task.estimatedCredits} 积分</span> : null}
             <span>{task.source === 'agent' ? '来自对话' : '创作台'}</span>
             <span className="ml-auto tabular-nums">{formatStarTime(task.createdAt)}</span>

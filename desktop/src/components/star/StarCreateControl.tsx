@@ -36,8 +36,10 @@ import {
   imageTierNote,
   nearest,
   referenceVideoAvailable,
+  risingDurations,
   videoCostAt,
   videoModelsFor,
+  videoRatioLabel,
   type ImageMode,
   type VideoMode,
 } from '../../pages/star/starStudioModels'
@@ -233,13 +235,13 @@ function SettingsPanel({ slot, mode, params, onClose }: { slot: string; mode: St
         {spec.kind === 'video' ? (
           <>
             <Row label="时长">
-              {durations.slice(0, 6).map(value => (
+              {risingDurations(durations.slice(0, 6)).map(value => (
                 <button key={value} type="button" className={`${CHIP} ${nearest(durations, duration) === value ? CHIP_ON : CHIP_OFF}`} onClick={() => update({ duration: value })}>{value} 秒</button>
               ))}
             </Row>
             <Row label="比例">
               {videoRatios.slice(0, 6).map(ratio => (
-                <button key={ratio} type="button" className={`${CHIP} ${(params.ratio ?? videoRatios[0]) === ratio ? CHIP_ON : CHIP_OFF}`} onClick={() => update({ ratio })}>{ratio}</button>
+                <button key={ratio} type="button" className={`${CHIP} ${(params.ratio ?? videoRatios[0]) === ratio ? CHIP_ON : CHIP_OFF}`} onClick={() => update({ ratio })}>{videoRatioLabel(ratio)}</button>
               ))}
             </Row>
           </>

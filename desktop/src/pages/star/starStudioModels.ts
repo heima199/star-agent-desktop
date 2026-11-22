@@ -172,3 +172,102 @@ export function autoVideoModel(catalog: StarCatalog | null, mode: VideoMode, dur
 export function nearest(values: number[], wanted: number): number {
   return values.reduce((best, item) => (Math.abs(item - wanted) < Math.abs(best - wanted) ? item : best), values[0] ?? wanted)
 }
+
+/**
+ * The console lists a model's values with the model's own default first
+ * (6, 4, 5, 8 …; 768P, 1080P, 2K, 480P), which reads as a jumble in a row of
+ * buttons. The rows show them rising; which value is picked when nothing was
+ * chosen still follows the console's order.
+ */
+export function risingDurations(values: number[]): number[] {
+  return [...values].sort((a, b) => a - b)
+}
+
+/** Lines of a resolution as it is spelled ("480P", "2K"); a spelling that says no size sorts last. */
+function resolutionLines(value: string): number {
+  const match = /^\s*(\d+(?:\.\d+)?)\s*([pk])\s*$/i.exec(value)
+  if (!match) return Infinity
+  return Number(match[1]) * (match[2]!.toLowerCase() === 'k' ? 720 : 1)
+}
+
+export function risingResolutions(values: string[]): string[] {
+  return values
+    .map((value, index) => ({ value, index, lines: resolutionLines(value) }))
+    .sort((a, b) => (a.lines === b.lines ? a.index - b.index : a.lines - b.lines))
+    .map(item => item.value)
+}
+
+/** Ratios are numbers; the words the console puts among them are shown in Chinese. */
+export function videoRatioLabel(ratio: string): string {
+  if (ratio === 'adaptive') return '自适应'
+  if (ratio === 'auto') return '自动'
+  return ratio
+}
+
+/**
+ * The picked model while `offered` still lists it, otherwise '' (自动). Going
+ * back to 自动 on every change of mode put a 3-credit pick on the 10-credit
+ * default unnoticed (文生图 to 图生图, or 「用作参考」 on a result).
+ */
+export function keptModel(picked: string, offered: { id: string }[]): string {
+  return picked && offered.some(item => item.id === picked) ? picked : ''
+}
+
+/**
+ * The price beside a video model in the list. The picked model shows the
+ * console's own price once it has answered, so the list and the line under
+ * the button name one price for the job (4 s at 480P read "约 10 积分" in the
+ * list and "约 7 积分" under the button); the others go by the offline rule.
+ */
+export function listedVideoCost(model: StarVideoModel, picked: string, exact: number | undefined, duration: number, resolution?: string): number | undefined {
+  return (model.id === picked ? exact : undefined) ?? videoCostAt(model, duration, resolution)
+}
+
+/** The name the model list shows for `id`; the id itself while the catalog does not list it. */
+export function mediaModelLabel(catalog: StarCatalog | null, id: string): string {
+  const listed = (catalog?.image ?? []).find(model => model.id === id) ?? (catalog?.video ?? []).find(model => model.id === id)
+  return listed?.label || id
+}
+
+/** How many items each reference row of a mode takes; 0 for a row the mode does not show. */
+export type StudioRows = { refs: number; first: number; last: number; videos: number }
+
+/**
+ * The reference rows a mode shows. The form draws, checks and sends exactly
+ * these: nothing it does not show goes along with a request or holds one back.
+ */
+export function shownRows(kind: 'image' | 'video', imageMode: ImageMode, videoMode: VideoMode): StudioRows {
+  if (kind === 'image') return { refs: imageMode === 'text2image' ? 0 : imageMode === 'image2image' ? 1 : 16, first: 0, last: 0, videos: 0 }
+  return {
+    refs: videoMode === 'multi2video' || videoMode === 'video2video' ? 8 : 0,
+    first: videoMode === 'image2video' || videoMode === 'frames2video' ? 1 : 0,
+    last: videoMode === 'frames2video' ? 1 : 0,
+    videos: videoMode === 'video2video' ? 3 : 0,
+  }
+}
+
+/** The row 「用作参考」 puts an output in: the 参考图 row where the video mode shows one, 首帧 otherwise. */
+export function referenceSlot(incoming: 'image' | 'video', kind: 'image' | 'video', videoMode: VideoMode): { slot: 'videos' | 'refs' | 'first'; max: number } {
+  if (incoming === 'video') return { slot: 'videos', max: 3 }
+  if (kind === 'image') return { slot: 'refs', max: 16 }
+  const pictures = shownRows('video', 'text2image', videoMode).refs
+  return pictures ? { slot: 'refs', max: pictures } : { slot: 'first', max: 1 }
+}
+
+/** Whether a row takes one more output. The same output is never attached twice. */
+export function referenceRoom(attached: (string | undefined)[], url: string, max: number): 'room' | 'attached' | 'full' {
+  if (attached.includes(url)) return 'attached'
+  return attached.length >= max ? 'full' : 'room'
+}
+
+/** What 「用作参考」 says when it attaches nothing. */
+export function referenceRefusal(kind: 'image' | 'video', why: 'attached' | 'full', max: number): string {
+  if (why === 'attached') return kind === 'image' ? '这张图片已经在参考里了' : '这个视频已经在参考里了'
+  return kind === 'image' ? `参考图最多 ${max} 张，先移除一张再添加` : `参考视频最多 ${max} 个，先移除一个再添加`
+}
+
+/** 图片 mode once 「用作参考」 has added a picture: one picture is 图生图, more are 多图参考. */
+export function imageModeWith(mode: ImageMode, pictures: number): ImageMode {
+  if (pictures > 1) return 'multi2image'
+  return mode === 'text2image' ? 'image2image' : mode
+}

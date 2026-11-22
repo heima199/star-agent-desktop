@@ -14,15 +14,25 @@ import {
   IMAGE_RATIO_IGNORED,
   IMAGE_RATIOS,
   imageModelsFor,
+  imageModeWith,
   imageRatioIgnored,
   nearest,
   imageTierCost,
   imageTierNote,
+  keptModel,
+  listedVideoCost,
   REFERENCE_VIDEO_PAUSED,
+  referenceRefusal,
+  referenceRoom,
+  referenceSlot,
   referenceVideoAvailable,
+  risingDurations,
+  risingResolutions,
+  shownRows,
   VIDEO_MODES,
   videoCostAt,
   videoModelsFor,
+  videoRatioLabel,
   type ImageMode,
   type VideoMode,
 } from './starStudioModels'
@@ -98,14 +108,22 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
   const [imageMode, setImageMode] = useState<ImageMode>('text2image')
   const [videoMode, setVideoMode] = useState<VideoMode>('text2video')
   const [prompt, setPrompt] = useState('')
-  const [model, setModel] = useState('')
+  // 图片 and 视频 each keep their own pick, like their own ratio and resolution.
+  const [imageModel, setImageModel] = useState('')
+  const [videoModel, setVideoModel] = useState('')
+  const model = kind === 'image' ? imageModel : videoModel
+  const setModel = kind === 'image' ? setImageModel : setVideoModel
   const [ratio, setRatio] = useState('auto')
   const [resolution, setResolution] = useState<'1k' | '2k' | '4k'>('1k')
   const [count, setCount] = useState(1)
   const [duration, setDuration] = useState(5)
   const [videoRatio, setVideoRatio] = useState('16:9')
   const [videoResolution, setVideoResolution] = useState('')
-  const [refs, setRefs] = useState<Ref[]>([])
+  // Their own reference pictures too: one attached for 图生图 does not ride along into a video.
+  const [imageRefs, setImageRefs] = useState<Ref[]>([])
+  const [videoRefs, setVideoRefs] = useState<Ref[]>([])
+  const refs = kind === 'image' ? imageRefs : videoRefs
+  const setRefs = kind === 'image' ? setImageRefs : setVideoRefs
   const [first, setFirst] = useState<Ref[]>([])
   const [last, setLast] = useState<Ref[]>([])
   const [videos, setVideos] = useState<Ref[]>([])
@@ -136,18 +154,27 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
   useEffect(() => {
     if (!incoming) return
     const item: Ref = { id: `r${++refSeq}`, name: incoming.kind === 'image' ? '生成结果' : '生成视频', kind: incoming.kind, preview: incoming.kind === 'image' ? incoming.url : null, url: incoming.url, status: 'ready' }
+    const note = (message: string) => useUIStore.getState().addToast({ type: 'info', message })
+    const { slot, max } = referenceSlot(incoming.kind, kind, videoMode)
     if (incoming.kind === 'video' && !videoReferenceOn) {
-      useUIStore.getState().addToast({ type: 'info', message: REFERENCE_VIDEO_PAUSED })
-    } else if (incoming.kind === 'video') {
-      setKind('video')
-      setVideoMode('video2video')
-      setVideos(list => [...list, item].slice(0, 3))
-    } else if (kind === 'video') {
+      note(REFERENCE_VIDEO_PAUSED)
+    } else if (slot === 'first') {
       if (videoMode === 'text2video') setVideoMode('image2video')
       setFirst([item])
     } else {
-      setImageMode(mode => (mode === 'text2image' ? 'image2image' : mode === 'image2image' && refs.length ? 'multi2image' : mode))
-      setRefs(list => [...list, item].slice(0, 16))
+      const row = slot === 'videos' ? videos : refs
+      const room = referenceRoom(row.map(ref => ref.url), incoming.url, max)
+      const attached = row.length + (room === 'room' ? 1 : 0)
+      if (slot === 'videos') {
+        setKind('video')
+        setVideoMode('video2video')
+      } else if (kind === 'image') {
+        // Also when nothing is added: the mode that shows what is attached.
+        setImageMode(mode => imageModeWith(mode, attached))
+      }
+      if (room !== 'room') note(referenceRefusal(incoming.kind, room, max))
+      else if (slot === 'videos') setVideos([...row, item])
+      else setRefs([...row, item])
     }
     onIncomingHandled()
   }, [incoming]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -175,7 +202,12 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
   const estimate = exact?.credits ?? localEstimate
   const tierNote = kind === 'image' ? imageTierNote(resolution, exact?.tier, ratio) : null
 
-  useEffect(() => setModel(''), [kind, imageMode, videoMode])
+  useEffect(() => setImageModel(picked => keptModel(picked, imageModels)), [imageModels])
+  useEffect(() => setVideoModel(picked => keptModel(picked, videoModels)), [videoModels])
+
+  // What the mode shows is what gets checked and sent.
+  const rows = shownRows(kind, imageMode, videoMode)
+  const shown = { refs: refs.slice(0, rows.refs), first: first.slice(0, rows.first), last: last.slice(0, rows.last), videos: videos.slice(0, rows.videos) }
 
   const upload = (files: File[], fileKind: 'image' | 'video', setter: React.Dispatch<React.SetStateAction<Ref[]>>, max: number) => {
     const added = files.map((file): Ref => ({ id: `r${++refSeq}`, name: file.name, kind: fileKind, preview: fileKind === 'image' ? URL.createObjectURL(file) : null, status: 'uploading' }))
@@ -199,7 +231,7 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
       setError('请填写描述')
       return
     }
-    const all = [...refs, ...first, ...last, ...videos]
+    const all = [...shown.refs, ...shown.first, ...shown.last, ...shown.videos]
     if (all.some(item => item.status === 'uploading')) {
       setError('参考素材还在上传，请稍候')
       return
@@ -211,8 +243,8 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
     setBusy(true)
     try {
       if (kind === 'image') {
-        const references = imageMode === 'text2image' ? [] : ready(refs)
-        if (imageMode !== 'text2image' && !references.length) throw new Error('请先添加参考图')
+        const references = ready(shown.refs)
+        if (rows.refs && !references.length) throw new Error('请先添加参考图')
         const { task } = await starApi.generateImage({
           prompt: prompt.trim(),
           ...(model ? { model } : {}),
@@ -223,19 +255,19 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
         })
         useStarStore.getState().upsertTask(task)
       } else {
-        const firstUrl = ready(first)[0]
-        const lastUrl = ready(last)[0]
-        if ((videoMode === 'image2video' || videoMode === 'frames2video') && !firstUrl) throw new Error('请添加首帧图片')
-        if (videoMode === 'frames2video' && !lastUrl) throw new Error('请添加尾帧图片')
-        if (videoMode === 'multi2video' && ready(refs).length < 1) throw new Error('请添加参考图')
-        if (videoMode === 'video2video' && !ready(videos).length) throw new Error('请添加参考视频')
+        const firstUrl = ready(shown.first)[0]
+        const lastUrl = ready(shown.last)[0]
+        if (rows.first && !firstUrl) throw new Error('请添加首帧图片')
+        if (rows.last && !lastUrl) throw new Error('请添加尾帧图片')
+        if (videoMode === 'multi2video' && !ready(shown.refs).length) throw new Error('请添加参考图')
+        if (rows.videos && !ready(shown.videos).length) throw new Error('请添加参考视频')
         const { task } = await starApi.generateVideo({
           prompt: prompt.trim(),
           ...(model ? { model } : {}),
-          ...(firstUrl && videoMode !== 'multi2video' && videoMode !== 'text2video' ? { firstFrame: firstUrl } : {}),
-          ...(lastUrl && videoMode === 'frames2video' ? { lastFrame: lastUrl } : {}),
-          ...(videoMode === 'multi2video' || videoMode === 'video2video' ? { references: ready(refs) } : {}),
-          ...(videoMode === 'video2video' ? { videos: ready(videos) } : {}),
+          ...(firstUrl ? { firstFrame: firstUrl } : {}),
+          ...(lastUrl ? { lastFrame: lastUrl } : {}),
+          ...(rows.refs ? { references: ready(shown.refs) } : {}),
+          ...(rows.videos ? { videos: ready(shown.videos) } : {}),
           duration: effectiveDuration,
           ratio: effectiveRatio,
           resolution: effectiveResolution,
@@ -275,20 +307,20 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
         {modeHint ? <p className="mt-1.5 text-[12px] text-[var(--color-text-tertiary)]">{modeHint}</p> : null}
       </div>
 
-      {kind === 'image' && imageMode !== 'text2image' ? (
-        <RefSlots label={imageMode === 'image2image' ? '参考图' : '参考图（按顺序称为图1、图2…）'} items={refs} max={imageMode === 'image2image' ? 1 : 16} kind="image" onAdd={files => upload(files, 'image', setRefs, imageMode === 'image2image' ? 1 : 16)} onRemove={remove(setRefs)} />
+      {kind === 'image' && rows.refs ? (
+        <RefSlots label={rows.refs === 1 ? '参考图' : '参考图（按顺序称为图1、图2…）'} items={shown.refs} max={rows.refs} kind="image" onAdd={files => upload(files, 'image', setRefs, rows.refs)} onRemove={remove(setRefs)} />
       ) : null}
-      {kind === 'video' && (videoMode === 'image2video' || videoMode === 'frames2video') ? (
+      {rows.first ? (
         <div className="flex gap-6">
-          <RefSlots label="首帧" items={first} max={1} kind="image" onAdd={files => upload(files, 'image', setFirst, 1)} onRemove={remove(setFirst)} />
-          {videoMode === 'frames2video' ? <RefSlots label="尾帧" items={last} max={1} kind="image" onAdd={files => upload(files, 'image', setLast, 1)} onRemove={remove(setLast)} /> : null}
+          <RefSlots label="首帧" items={shown.first} max={rows.first} kind="image" onAdd={files => upload(files, 'image', setFirst, rows.first)} onRemove={remove(setFirst)} />
+          {rows.last ? <RefSlots label="尾帧" items={shown.last} max={rows.last} kind="image" onAdd={files => upload(files, 'image', setLast, rows.last)} onRemove={remove(setLast)} /> : null}
         </div>
       ) : null}
-      {kind === 'video' && videoMode === 'video2video' ? (
-        <RefSlots label="参考视频（mp4 / mov / webm，≤64MB）" items={videos} max={3} kind="video" onAdd={files => upload(files, 'video', setVideos, 3)} onRemove={remove(setVideos)} />
+      {rows.videos ? (
+        <RefSlots label="参考视频（mp4 / mov / webm，≤64MB）" items={shown.videos} max={rows.videos} kind="video" onAdd={files => upload(files, 'video', setVideos, rows.videos)} onRemove={remove(setVideos)} />
       ) : null}
-      {kind === 'video' && (videoMode === 'multi2video' || videoMode === 'video2video') ? (
-        <RefSlots label={videoMode === 'multi2video' ? '参考图' : '参考图（可选）'} items={refs} max={8} kind="image" onAdd={files => upload(files, 'image', setRefs, 8)} onRemove={remove(setRefs)} />
+      {kind === 'video' && rows.refs ? (
+        <RefSlots label={videoMode === 'multi2video' ? '参考图' : '参考图（可选）'} items={shown.refs} max={rows.refs} kind="image" onAdd={files => upload(files, 'image', setRefs, rows.refs)} onRemove={remove(setRefs)} />
       ) : null}
 
       <TextArea
@@ -312,7 +344,7 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
             // Priced at the picked 清晰度, or 分辨率 and 时长, like the job itself.
             const cost = kind === 'image'
               ? imageTierCost(item as StarImageModel, resolution)
-              : videoCostAt(item as StarVideoModel, effectiveDuration, effectiveResolution)
+              : listedVideoCost(item as StarVideoModel, model, exact?.credits, effectiveDuration, effectiveResolution)
             const price = cost === undefined ? '' : kind === 'image' ? ` · ${cost} 积分/张` : ` · 约 ${cost} 积分`
             return <option key={item.id} value={item.id}>{item.label}{price}</option>
           })}
@@ -342,16 +374,16 @@ export function StarStudioForm({ incoming, onIncomingHandled }: { incoming: Star
         <>
           <div>
             <Label>时长</Label>
-            <div className="flex flex-wrap gap-1.5">{durations.map(item => <button key={item} type="button" className={chip(effectiveDuration === item)} onClick={() => setDuration(item)}>{item} 秒</button>)}</div>
+            <div className="flex flex-wrap gap-1.5">{risingDurations(durations).map(item => <button key={item} type="button" className={chip(effectiveDuration === item)} onClick={() => setDuration(item)}>{item} 秒</button>)}</div>
           </div>
           <div className="flex flex-wrap gap-6">
             <div>
               <Label>比例</Label>
-              <div className="flex flex-wrap gap-1.5">{ratios.map(item => <button key={item} type="button" className={chip(effectiveRatio === item)} onClick={() => setVideoRatio(item)}>{item}</button>)}</div>
+              <div className="flex flex-wrap gap-1.5">{ratios.map(item => <button key={item} type="button" className={chip(effectiveRatio === item)} onClick={() => setVideoRatio(item)}>{videoRatioLabel(item)}</button>)}</div>
             </div>
             <div>
               <Label>分辨率</Label>
-              <div className="flex flex-wrap gap-1.5">{resolutions.map(item => <button key={item} type="button" className={chip(effectiveResolution === item)} onClick={() => setVideoResolution(item)}>{item}</button>)}</div>
+              <div className="flex flex-wrap gap-1.5">{risingResolutions(resolutions).map(item => <button key={item} type="button" className={chip(effectiveResolution === item)} onClick={() => setVideoResolution(item)}>{item}</button>)}</div>
             </div>
           </div>
         </>
