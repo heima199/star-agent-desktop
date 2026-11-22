@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -14,6 +14,7 @@ vi.mock('@/pages/TerminalSettings', () => ({
 
 import { settingsApi } from '@/api/settings'
 import { STAR_OPEN_SETTINGS_EVENT } from '@/lib/starSettingsEvent'
+import { useOpenTargetStore } from '@/stores/openTargetStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useUIStore } from '@/stores/uiStore'
 import { ACCENT_STORAGE_KEY, MONO_ACCENT } from '@/theme/accent'
@@ -166,5 +167,82 @@ describe('StarSettingsHost', () => {
     const dialog = openSettings()
     expect(within(dialog).getByRole('button', { name: '运行环境' })).toHaveAttribute('aria-current', 'page')
     expect(await within(dialog).findByTestId('terminal-pane')).toBeInTheDocument()
+  })
+
+  // 存储与保留 opened the whole settings page it borrows its sections from: theme,
+  // language and agent settings first, the storage sections at the very bottom.
+  it('shows only the storage sections under 数据管理 → 存储与保留, and the whole page under 更多设置', async () => {
+    // What the page asks the local server for when it mounts.
+    const settings = useSettingsStore.getState()
+    const targets = useOpenTargetStore.getState()
+    useSettingsStore.setState({ fetchOutputStyles: async () => {}, fetchAppMode: async () => {} })
+    useOpenTargetStore.setState({ ensureTargets: async () => {} })
+    // The page is the largest lazy chunk of the card: in a full run on a busy
+    // machine its first import took longer than the default second.
+    const loaded = { timeout: 15_000 }
+    try {
+      const dialog = openSettings()
+      fireEvent.click(within(dialog).getByRole('button', { name: '数据管理' }))
+      fireEvent.click(within(dialog).getByRole('button', { name: '存储与保留' }))
+
+      expect(await within(dialog).findByRole('heading', { level: 2, name: '存储与保留' }, loaded)).toBeInTheDocument()
+      expect(within(dialog).getByText(/^agent trace$/i)).toBeInTheDocument()
+      expect(within(dialog).queryByRole('heading', { level: 2, name: /^(通用|General)$/ })).not.toBeInTheDocument()
+      expect(within(dialog).queryByText(/^(语言|Language)$/)).not.toBeInTheDocument()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: '通用' }))
+      fireEvent.click(within(dialog).getByRole('button', { name: /^更多设置/ }))
+      expect(await within(dialog).findByRole('heading', { level: 2, name: /^(通用|General)$/ }, loaded)).toBeInTheDocument()
+      expect(within(dialog).getByText(/^agent trace$/i)).toBeInTheDocument()
+      expect(within(dialog).queryByRole('heading', { level: 2, name: '存储与保留' })).not.toBeInTheDocument()
+    } finally {
+      // Unmounted first: handed the real loaders back, the page would call them.
+      cleanup()
+      useSettingsStore.setState({ fetchOutputStyles: settings.fetchOutputStyles, fetchAppMode: settings.fetchAppMode })
+      useOpenTargetStore.setState({ ensureTargets: targets.ensureTargets })
+    }
+  }, 40_000)
+
+  // With the focus left in the composer behind the card, typed text kept going
+  // there and Escape did nothing: the composer handles that key first.
+  it('takes the focus while it is open, closes on Escape and gives the focus back', () => {
+    const composer = document.createElement('textarea')
+    document.body.appendChild(composer)
+    composer.focus()
+    try {
+      const dialog = openSettings()
+      expect(dialog).toHaveFocus()
+
+      fireEvent.keyDown(dialog, { key: 'Escape' })
+
+      expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument()
+      expect(composer).toHaveFocus()
+    } finally {
+      composer.remove()
+    }
+  })
+
+  // 意见反馈 opens above the card and closes on Escape too, on a listener that
+  // runs before the card's. The card found itself alone by then and closed as well.
+  it('stays open when Escape closes a dialog above it, and closes on the next press', () => {
+    openSettings()
+    const above = document.createElement('div')
+    above.setAttribute('role', 'dialog')
+    document.body.appendChild(above)
+    const closeAbove = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') above.remove()
+    }
+    document.addEventListener('keydown', closeAbove)
+    try {
+      fireEvent.keyDown(above, { key: 'Escape' })
+      expect(above).not.toBeInTheDocument()
+      expect(screen.getByRole('dialog', { name: '设置' })).toBeInTheDocument()
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument()
+    } finally {
+      document.removeEventListener('keydown', closeAbove)
+      above.remove()
+    }
   })
 })

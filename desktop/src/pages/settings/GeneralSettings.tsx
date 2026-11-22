@@ -81,7 +81,16 @@ const BUILT_IN_OUTPUT_STYLE_TRANSLATION_KEYS = {
   },
 } satisfies Record<string, { label: TranslationKey; description: TranslationKey }>
 
-export function GeneralSettings() {
+type GeneralSettingsProps = {
+  /**
+   * `storage` leaves what is kept on disk and for how long, for
+   * 设置 → 数据管理 → 存储与保留, whose own header stands in for this page's.
+   */
+  only?: 'storage'
+}
+
+export function GeneralSettings({ only }: GeneralSettingsProps = {}) {
+  const storageOnly = only === 'storage'
   const {
     currentModel,
     effortLevel,
@@ -844,6 +853,8 @@ export function GeneralSettings() {
 
   return (
     <div className="w-full min-w-0">
+      {/* Up to the storage sections: everything the narrowed page leaves out. */}
+      {!storageOnly && <>
       <SettingsPageHeader title={t('settings.tab.general')} description={t('settings.general.pageDescription')} />
 
       {proxyManagedSettingsWarning && (
@@ -1447,6 +1458,7 @@ export function GeneralSettings() {
           </SettingsBlock>
         </SettingsGroup>
       </SettingsSection>
+      </>}
 
       <SettingsSection title={t('settings.general.traceTitle')} description={t('settings.general.traceDescription')}>
         <SettingsGroup>

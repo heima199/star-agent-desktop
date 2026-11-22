@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type ComponentType } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ComponentType } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Blocks,
@@ -88,7 +88,9 @@ const SUBS: Partial<Record<SectionId, Sub[]>> = {
   personal: [{ id: 'voice', label: '语音输入' }, { id: 'pets', label: '桌面宠物' }],
   // 远程控制 (IM bots + the phone page) left the sidebar for this tab.
   devices: [{ id: 'remote', label: '远程控制' }, { id: 'h5', label: '手机访问' }, { id: 'computer', label: '电脑操控' }],
-  data: [{ id: 'activity', label: '使用统计' }, { id: 'general', label: '存储与保留' }],
+  // The storage sections of the full settings page, without its theme,
+  // language and agent settings: those have their own places in this card.
+  data: [{ id: 'activity', label: '使用统计' }, { id: 'general', label: '存储与保留', props: { only: 'storage' } }],
   // 运行环境 is the one place for where and how commands run: the shell, the
   // network the agent's requests take, and the hooks that run at set moments.
   runtime: [{ id: 'terminal', label: '终端', props: { showPreferences: true } }, { id: 'network', label: '网络' }, { id: 'hooks', label: '钩子' }],
@@ -130,6 +132,7 @@ export function StarSettingsHost() {
   const [open, setOpen] = useState(false)
   const [section, setSection] = useState<SectionId>('general')
   const [sub, setSub] = useState<keyof typeof Panes | null>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const onOpen = () => {
@@ -155,15 +158,38 @@ export function StarSettingsHost() {
     })
   }, [open])
 
+  // The card takes the keyboard while it is open. Focus left in the composer
+  // behind it kept typed text going there, and Escape never got here: the
+  // composer handles that key first.
   useEffect(() => {
     if (!open) return
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    dialogRef.current?.focus({ preventScroll: true })
+    return () => {
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true })
+    }
+  }, [open])
+
+  // Escape closes the card only when nothing is open above it, and that has to
+  // be read before anything handles the key: a dialog on top (意见反馈) closes
+  // on the same press, on a listener that runs first, and is gone by the time
+  // the key gets here. One press closed both.
+  useEffect(() => {
+    if (!open) return
+    let coveredWhenPressed = false
+    const onPress = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') coveredWhenPressed = document.querySelectorAll('[role="dialog"]').length > 1
+    }
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return
-      if (document.querySelectorAll('[role="dialog"]').length > 1) return
+      if (event.key !== 'Escape' || event.defaultPrevented || coveredWhenPressed) return
       setOpen(false)
     }
+    window.addEventListener('keydown', onPress, true)
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onPress, true)
+      window.removeEventListener('keydown', onKey)
+    }
   }, [open])
 
   if (!open) return null
@@ -175,7 +201,7 @@ export function StarSettingsHost() {
 
   return createPortal(
     <div className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center bg-black/45 p-6" onMouseDown={event => { if (event.target === event.currentTarget) setOpen(false) }}>
-      <div role="dialog" aria-modal="true" aria-label="设置" className="flex h-[min(780px,90vh)] w-[min(1120px,94vw)] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+      <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="设置" className="flex h-[min(780px,90vh)] outline-none w-[min(1120px,94vw)] overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
         <nav aria-label="设置分类" className="flex w-[212px] shrink-0 flex-col overflow-y-auto border-r border-[var(--color-border)] bg-[var(--color-surface-sidebar,var(--color-surface-container-low))] px-2.5 py-4">
           {GROUPS.map(group => (
             <div key={group.label} className="mb-3">
@@ -221,6 +247,7 @@ export function StarSettingsHost() {
                 {section === 'appearance' ? <StarAppearanceSection /> : null}
                 {section === 'shortcuts' ? <StarShortcutsSection /> : null}
                 {section === 'security' ? <><SettingsPageHeader title="安全中心" description="默认权限与运行诊断。" /><DefaultPermissionRow /></> : null}
+                {section === 'data' && activeSub?.id === 'general' ? <SettingsPageHeader title="存储与保留" description="会话记录在本机保留多久、数据存在哪个目录，以及排查问题用的请求链路记录。" /> : null}
                 {Pane ? <Pane {...(activeSub?.props ?? {})} /> : null}
               </Suspense>
             </div>
