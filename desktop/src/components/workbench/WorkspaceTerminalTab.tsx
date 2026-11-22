@@ -50,9 +50,19 @@ export function WorkspaceTerminalTab({ sessionId, tab, active }: WorkspaceTermin
         <p
           role="status"
           data-testid={`workspace-terminal-exited-${tab.ordinal}`}
-          className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-3 py-1.5 text-[12px] text-[var(--color-text-secondary)]"
+          className="flex shrink-0 items-center gap-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface-container)] px-3 py-1.5 text-[12px] text-[var(--color-text-secondary)]"
         >
-          {t('workspace.terminal.exited')} {t('workspace.terminal.restart')}
+          <span>{t('workspace.terminal.exited')}</span>
+          {/* The tab menu holds the same action, but nothing on screen points
+              there, and a tab restored from disk shows nothing else. */}
+          <button
+            type="button"
+            data-testid={`workspace-terminal-restart-${tab.ordinal}`}
+            className="rounded-[var(--radius-sm)] font-medium text-[var(--color-text-primary)] underline decoration-[var(--color-border)] underline-offset-2 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+            onClick={() => getTerminalRuntime(runtimeId, 'idle').restart?.()}
+          >
+            {t('workspace.terminal.restart')}
+          </button>
         </p>
       ) : null}
       <TerminalSettings

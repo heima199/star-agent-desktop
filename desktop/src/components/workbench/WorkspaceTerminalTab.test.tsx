@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -153,6 +153,20 @@ describe('restored terminals', () => {
     expect(screen.getByTestId('workspace-terminal-host-1'))
       .toHaveAttribute('data-auto-start', 'false')
     expect(screen.getByTestId('workspace-terminal-exited-1')).toBeInTheDocument()
+  })
+
+  it('restarts an exited terminal from the notice that reports the exit', () => {
+    const restart = vi.fn()
+    updateTerminalRuntime(getTerminalRuntime('runtime-1', 'idle'), { restart })
+    render(
+      <WorkspaceTerminalTab sessionId={SESSION} tab={makeTab({ status: 'exited' })} active />,
+    )
+
+    // The notice names the way out, so the way out has to be in it: the tab
+    // menu holds the same action, but nothing on screen points there.
+    fireEvent.click(within(screen.getByTestId('workspace-terminal-exited-1')).getByRole('button'))
+
+    expect(restart).toHaveBeenCalledOnce()
   })
 
   it('spawns normally for a terminal the user just created', () => {
