@@ -5,6 +5,7 @@ import { constants } from 'node:fs'
 import * as path from 'node:path'
 import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
 import { sanitizePath } from '../../utils/sessionStoragePortable.js'
+import { decodeShellOutput, systemLegacyDecoder } from '../../utils/shell/outputEncoding.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import { HISTORY_SEMANTIC_RECORD_BYTES, streamBoundedHistory, withHistoryReadBudget } from './boundedSessionHistory.js'
 
@@ -177,10 +178,10 @@ export async function readSessionBackgroundTaskOutput(
     const buffer = Buffer.alloc(Math.min(opened.size, MAX_BACKGROUND_OUTPUT_BYTES))
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset)
     signal?.throwIfAborted()
-    // Tail offsets can cut through a UTF-8 code point; omit its continuation bytes.
-    let start = 0
-    if (offset) while (start < bytesRead && (buffer[start]! & 0xc0) === 0x80) start++
-    return { taskId, state: bytesRead ? 'available' : 'empty', text: buffer.subarray(start, bytesRead).toString('utf8'), totalBytes: opened.size, truncated: offset > 0 }
+    // Tail offsets can cut through a character; the half that is left of it is omitted.
+    // The command wrote these bytes: lines that are not UTF-8 are read in the system code page.
+    const text = decodeShellOutput(buffer.subarray(0, bytesRead), await systemLegacyDecoder(), { startsMidway: offset > 0 })
+    return { taskId, state: bytesRead ? 'available' : 'empty', text, totalBytes: opened.size, truncated: offset > 0 }
   } catch (error) {
     signal?.throwIfAborted()
     if (record(error) && error.code === 'ENOENT') return empty('missing')

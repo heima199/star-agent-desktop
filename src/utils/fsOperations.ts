@@ -13,6 +13,7 @@ import {
 import { homedir } from 'os'
 import * as nodePath from 'path'
 import { getErrnoCode } from './errors.js'
+import { decodeShellOutput, systemLegacyDecoder } from './shell/outputEncoding.js'
 import { slowLogging } from './slowOperations.js'
 
 /**
@@ -658,6 +659,9 @@ export type ReadFileRangeResult = {
  * Read up to `maxBytes` from a file starting at `offset`.
  * Returns a flat string from Buffer — no sliced string references to a
  * larger parent. Returns null if the file is smaller than the offset.
+ *
+ * This and tailFile read task output, which is whatever the command wrote:
+ * the lines that are not UTF-8 are read in the system code page.
  */
 export async function readFileRange(
   path: string,
@@ -687,7 +691,11 @@ export async function readFileRange(
   }
 
   return {
-    content: buffer.toString('utf8', 0, totalRead),
+    content: decodeShellOutput(
+      buffer.subarray(0, totalRead),
+      await systemLegacyDecoder(),
+      { startsMidway: offset > 0, endsMidway: offset + totalRead < size },
+    ),
     bytesRead: totalRead,
     bytesTotal: size,
   }
@@ -725,7 +733,11 @@ export async function tailFile(
   }
 
   return {
-    content: buffer.toString('utf8', 0, totalRead),
+    content: decodeShellOutput(
+      buffer.subarray(0, totalRead),
+      await systemLegacyDecoder(),
+      { startsMidway: offset > 0 },
+    ),
     bytesRead: totalRead,
     bytesTotal: size,
   }

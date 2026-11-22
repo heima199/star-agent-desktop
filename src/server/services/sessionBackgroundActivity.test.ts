@@ -6,6 +6,7 @@ import { activeAgentTasks, activeNonAgentTasks } from '../ws/agentTaskState.js'
 import { MAX_BACKGROUND_OUTPUT_BYTES, projectSessionBackgroundActivity, readSessionBackgroundTaskOutput } from './sessionBackgroundActivity.js'
 import type { MessageEntry } from './sessionService.js'
 import { sanitizePath } from '../../utils/sessionStoragePortable.js'
+import { _setSystemLegacyDecoderForTest, legacyDecoderFor } from '../../utils/shell/outputEncoding.js'
 
 test('activity uses session-owned runtime truth, hides nested tasks and keeps terminal output', () => {
   const id = 'fixture-activity'
@@ -33,7 +34,7 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await fs.rm(directory, { recursive: true, force: true })
 })
 
-async function outputFixture(content = 'server listening\n') {
+async function outputFixture(content: string | Buffer = 'server listening\n') {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'task-output-service-')))
   directories.push(root)
   const cwd = path.join(root, 'work')
@@ -79,6 +80,29 @@ test('reads a bounded tail without breaking the leading UTF-8 code point', async
   const multibyte = await f.read()
   expect(multibyte.text).not.toContain('\ufffd')
   expect(Buffer.byteLength(multibyte.text)).toBeLessThanOrEqual(MAX_BACKGROUND_OUTPUT_BYTES)
+})
+
+test('reads what a command wrote in the system code page', async () => {
+  // The first line of a ping on a Chinese Windows, in its code page (GBK).
+  const ping = Buffer.from('d5fdd4da2050696e67203132372e302e302e3120bedfd3d020333220d7d6bddab5c4cafdbedd3a0d0a', 'hex')
+  const text = '正在 Ping 127.0.0.1 具有 32 字节的数据:\r\n'
+  _setSystemLegacyDecoderForTest(legacyDecoderFor(936))
+  try {
+    const f = await outputFixture(ping)
+    expect(await f.read()).toEqual({ taskId: 'shell-task', state: 'available', text, totalBytes: ping.length, truncated: false })
+    // A bounded tail that starts on the second byte of 正 marks the half that is left of it.
+    const rest = 'a'.repeat(MAX_BACKGROUND_OUTPUT_BYTES - ping.length + 1)
+    await fs.writeFile(f.target, Buffer.concat([ping, Buffer.from(rest)]))
+    const tail = await f.read()
+    expect(tail.truncated).toBe(true)
+    expect(tail.text).toBe(`\ufffd${text.slice(1)}${rest}`)
+    // Where the system has no such code page the bytes are read as UTF-8, as before.
+    _setSystemLegacyDecoderForTest(null)
+    await fs.writeFile(f.target, ping)
+    expect((await f.read()).text).toBe(ping.toString('utf8'))
+  } finally {
+    _setSystemLegacyDecoderForTest(undefined)
+  }
 })
 
 test('requires an exact successful root shell tool/result pair and never adopts unrelated text', async () => {
