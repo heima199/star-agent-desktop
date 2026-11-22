@@ -3,7 +3,9 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { ActivitySettings } from './ActivitySettings'
+import { STAR_BRAND_DEFAULT } from '../lib/starBrand'
 import { useSettingsStore } from '../stores/settingsStore'
+import { useStarBrandStore } from '../stores/starBrandStore'
 
 const { getStatsMock } = vi.hoisted(() => ({
   getStatsMock: vi.fn(),
@@ -189,17 +191,22 @@ describe('ActivitySettings', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    useStarBrandStore.setState({ name: STAR_BRAND_DEFAULT })
   })
 
+  // The profile the local server answers with by default was named by nobody,
+  // and its name is still the upstream project's: the product's name shows.
   it('shows who this is and the lifetime total in English units', async () => {
+    useStarBrandStore.setState({ name: 'PRIVO' })
     render(<ActivitySettings />)
 
     await flushActivityLoad()
 
     expect(getStatsMock).toHaveBeenCalledWith('all')
-    expect(screen.getByText('cc-haha')).toBeInTheDocument()
-    expect(screen.getByAltText('cc-haha avatar')).toHaveAttribute('src', '/app-icon.png')
-    expect(screen.getByAltText('cc-haha avatar')).toHaveClass('scale-[1.28]')
+    expect(screen.getByRole('heading', { name: 'PRIVO' })).toBeInTheDocument()
+    expect(screen.queryByText('cc-haha')).not.toBeInTheDocument()
+    expect(screen.getByAltText('PRIVO avatar')).toHaveAttribute('src', '/app-icon.png')
+    expect(screen.getByAltText('PRIVO avatar')).toHaveClass('scale-[1.28]')
     expect(screen.getByRole('link', { name: 'github.com/NanmiCoder/cc-haha' })).toHaveAttribute(
       'href',
       'https://github.com/NanmiCoder/cc-haha',
@@ -210,6 +217,16 @@ describe('ActivitySettings', () => {
     expect(screen.getByText(/Total tokens · 20 active days/)).toBeInTheDocument()
     // The exact figure and the other family's notation are one hover away.
     expect(screen.getByTestId('token-total-value').closest('[title]')).toHaveAttribute('title', '2,864,000 · 286万')
+  })
+
+  it('starts the edit dialog of an unnamed profile from the product name', async () => {
+    useStarBrandStore.setState({ name: 'PRIVO' })
+    render(<ActivitySettings />)
+
+    await flushActivityLoad()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit profile' }))
+
+    expect(screen.getByLabelText('Display name')).toHaveValue('PRIVO')
   })
 
   it('counts in 万 for Chinese readers and keeps the exact figure on hover', async () => {
@@ -528,7 +545,7 @@ describe('ActivitySettings', () => {
     await flushActivityLoad()
 
     expect(deleteProfileAvatarMock).toHaveBeenCalled()
-    expect(screen.getByAltText('cc-haha avatar')).toHaveAttribute('src', '/app-icon.png')
+    expect(screen.getByAltText(`${STAR_BRAND_DEFAULT} avatar`)).toHaveAttribute('src', '/app-icon.png')
   })
 
   it('shows localized duration and the Chinese streak figures', async () => {

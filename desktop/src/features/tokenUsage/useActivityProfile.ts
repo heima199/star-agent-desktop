@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react'
 
 import {
   desktopUiPreferencesApi,
@@ -7,12 +7,25 @@ import {
 } from '../../api/desktopUiPreferences'
 import { useTranslation } from '../../i18n'
 import { publicAssetPath } from '../../lib/publicAsset'
+import { getStarBrandName, useStarBrand } from '../../stores/starBrandStore'
+
+/**
+ * What a profile is called until someone names it: the local server's default,
+ * which is still the upstream project's name. The page shows the product's
+ * name in its place (设置 → 数据管理 → 使用统计 read "cc-haha").
+ */
+export const UNNAMED_PROFILE_DISPLAY_NAME = 'cc-haha'
 
 export const DEFAULT_PROFILE: DesktopProfilePreferences = {
-  displayName: 'STAR',
+  displayName: UNNAMED_PROFILE_DISPLAY_NAME,
   subtitle: 'STAR',
   avatarFile: null,
   avatarUpdatedAt: null,
+}
+
+/** The profile as the page shows it: one nobody named carries the product's name. */
+export function withProductName(profile: DesktopProfilePreferences, productName: string): DesktopProfilePreferences {
+  return profile.displayName === UNNAMED_PROFILE_DISPLAY_NAME ? { ...profile, displayName: productName } : profile
 }
 
 export const DEFAULT_AVATAR_SRC = publicAssetPath('app-icon.png')
@@ -38,18 +51,20 @@ export type ActivityProfile = ReturnType<typeof useActivityProfile>
 /** The identity shown on the usage page and its edit dialog: load, edit, save, avatar upload and removal. */
 export function useActivityProfile() {
   const t = useTranslation()
-  const [profile, setProfile] = useState<DesktopProfilePreferences>(DEFAULT_PROFILE)
+  const brand = useStarBrand()
+  const [stored, setStored] = useState<DesktopProfilePreferences>(DEFAULT_PROFILE)
+  const profile = useMemo(() => withProductName(stored, brand.name), [stored, brand.name])
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isEditing, setIsEditing] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
-  const [draftDisplayName, setDraftDisplayName] = useState(DEFAULT_PROFILE.displayName)
+  const [draftDisplayName, setDraftDisplayName] = useState(profile.displayName)
   const [draftSubtitle, setDraftSubtitle] = useState(DEFAULT_PROFILE.subtitle)
 
   const adopt = useCallback((next: DesktopProfilePreferences) => {
-    setProfile(next)
-    setDraftDisplayName(next.displayName)
+    setStored(next)
+    setDraftDisplayName(withProductName(next, getStarBrandName()).displayName)
     setDraftSubtitle(next.subtitle)
   }, [])
 
