@@ -5,6 +5,7 @@ const {
   providersApiMock,
   chatStoreState,
   runtimeStoreState,
+  starStoreState,
   setSessionRuntimeMock,
   setSelectionMock,
   settingsSetModelMock,
@@ -36,6 +37,9 @@ const {
   runtimeStoreState: {
     selections: {} as Record<string, { providerId: string | null; modelId: string }>,
     setSelection: vi.fn(),
+  },
+  starStoreState: {
+    catalog: null as { chat: Array<{ id: string }> } | null,
   },
   setSessionRuntimeMock: vi.fn(),
   setSelectionMock: vi.fn(),
@@ -74,6 +78,12 @@ vi.mock('./settingsStore', () => ({
   },
 }))
 
+vi.mock('./starStore', () => ({
+  useStarStore: {
+    getState: () => starStoreState,
+  },
+}))
+
 function makeProvider(overrides: Partial<SavedProvider> = {}): SavedProvider {
   return {
     id: 'provider-a',
@@ -108,6 +118,7 @@ describe('providerStore runtime refresh', () => {
     vi.clearAllMocks()
     chatStoreState.sessions = {}
     runtimeStoreState.selections = {}
+    starStoreState.catalog = null
     providersApiMock.list.mockResolvedValue({ providers: [], activeId: null })
     providersApiMock.getOfficialModels.mockImplementation(async (id: string) => ({
       models: id === 'openai-official'
@@ -219,6 +230,89 @@ describe('providerStore runtime refresh', () => {
 
     expect(setSessionRuntimeMock).toHaveBeenCalledWith('restored', { providerId: provider.id, modelId: 'model-main[1m]' })
     expect(setSelectionMock).toHaveBeenCalledWith('restored', { providerId: provider.id, modelId: 'model-main[1m]' })
+  })
+
+  describe('STAR account models', () => {
+    // The STAR provider's slots hold a few preferred models; the picker also
+    // offers the rest of the account's chat catalog.
+    const starProvider = () => makeProvider({
+      id: 'star-provider',
+      presetId: 'star-saas',
+      name: 'STAR',
+      models: { main: 'claude-sonnet-5', haiku: 'gemini-2.5-flash', sonnet: 'claude-sonnet-5', opus: 'claude-opus-5' },
+    })
+    const chosen = () => ({ providerId: 'star-provider', modelId: 'claude-haiku-4-5', effortLevel: 'low' })
+    const backOnMain = { providerId: 'star-provider', modelId: 'claude-sonnet-5', effortLevel: 'low' }
+
+    async function startApp(provider: SavedProvider) {
+      providersApiMock.list.mockResolvedValue({ providers: [provider], activeId: provider.id })
+      const { useProviderStore } = await import('./providerStore')
+      useProviderStore.setState({ hasLoadedProviders: false })
+      await useProviderStore.getState().fetchProviders()
+    }
+
+    it('keeps a catalog model outside the provider slots when the app starts', async () => {
+      starStoreState.catalog = { chat: [{ id: 'claude-sonnet-5' }, { id: 'claude-haiku-4-5' }] }
+      chatStoreState.sessions = { open: { connectionState: 'connected', chatState: 'idle' } }
+      runtimeStoreState.selections = { open: chosen(), closed: chosen(), __draft__: chosen() }
+
+      await startApp(starProvider())
+
+      expect(setSelectionMock).not.toHaveBeenCalled()
+      expect(setSessionRuntimeMock).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['not loaded yet', null],
+      ['empty', { chat: [] }],
+    ])('keeps a model outside the provider slots while the catalog is %s', async (_state, catalog) => {
+      starStoreState.catalog = catalog
+      chatStoreState.sessions = { open: { connectionState: 'connected', chatState: 'idle' } }
+      runtimeStoreState.selections = { open: chosen(), __draft__: chosen() }
+
+      await startApp(starProvider())
+
+      expect(setSelectionMock).not.toHaveBeenCalled()
+      expect(setSessionRuntimeMock).not.toHaveBeenCalled()
+    })
+
+    it('returns to the main model once the catalog no longer lists the chosen one', async () => {
+      starStoreState.catalog = { chat: [{ id: 'claude-sonnet-5' }, { id: 'gemini-2.5-flash' }] }
+      chatStoreState.sessions = { open: { connectionState: 'connected', chatState: 'idle' } }
+      runtimeStoreState.selections = { open: chosen(), closed: chosen() }
+
+      await startApp(starProvider())
+
+      expect(setSelectionMock).toHaveBeenCalledWith('open', backOnMain)
+      expect(setSelectionMock).toHaveBeenCalledWith('closed', backOnMain)
+      expect(setSessionRuntimeMock.mock.calls).toEqual([['open', backOnMain]])
+    })
+
+    it('re-applies the chosen catalog model, not the main one, when the provider is saved', async () => {
+      starStoreState.catalog = { chat: [{ id: 'claude-haiku-4-5' }] }
+      const provider = starProvider()
+      providersApiMock.update.mockResolvedValue({ provider })
+      providersApiMock.list.mockResolvedValue({ providers: [provider], activeId: provider.id })
+      chatStoreState.sessions = { open: { connectionState: 'connected', chatState: 'idle' } }
+      runtimeStoreState.selections = { open: chosen() }
+
+      const { useProviderStore } = await import('./providerStore')
+      await useProviderStore.getState().updateProvider(provider.id, { apiKey: 'new-key' })
+
+      expect(setSessionRuntimeMock.mock.calls).toEqual([['open', chosen()]])
+    })
+
+    it('leaves other providers alone: a model outside their slots still returns to their main model', async () => {
+      starStoreState.catalog = { chat: [{ id: 'model-retired' }] }
+      const provider = makeProvider()
+      chatStoreState.sessions = { open: { connectionState: 'connected', chatState: 'idle' } }
+      runtimeStoreState.selections = { open: { providerId: provider.id, modelId: 'model-retired' } }
+
+      await startApp(provider)
+
+      expect(setSelectionMock).toHaveBeenCalledWith('open', { providerId: provider.id, modelId: 'model-main' })
+      expect(setSessionRuntimeMock.mock.calls).toEqual([['open', { providerId: provider.id, modelId: 'model-main' }]])
+    })
   })
 
   it('keeps the saved DeepSeek account mapping from the providers list', async () => {

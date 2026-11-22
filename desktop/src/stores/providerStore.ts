@@ -5,6 +5,7 @@ import { providersApi } from '../api/providers'
 import { useChatStore } from './chatStore'
 import { useSessionRuntimeStore } from './sessionRuntimeStore'
 import { useSettingsStore } from './settingsStore'
+import { useStarStore } from './starStore'
 import {
   BUILT_IN_PROVIDER_IDS,
   CLAUDE_OFFICIAL_PROVIDER_ID,
@@ -18,6 +19,7 @@ import {
   DEEPSEEK_ACCOUNT_PROVIDER_ID,
 } from '../constants/deepseekAccountProvider'
 import { BUNDLED_PROVIDER_PRESETS } from '../config/providerPresets'
+import { STAR_PROVIDER_PRESET_ID } from '../lib/modelPolicy'
 import { resolveProviderRuntimeModelId, resolveProviderSlotModelId } from '../lib/runtimeSelection'
 import type {
   SavedProvider,
@@ -124,17 +126,31 @@ function providerModelIds(provider: SavedProvider): Set<string> {
   )
 }
 
+/**
+ * Whether `provider` still offers `modelId`, so a restored choice may stay.
+ *
+ * A saved provider offers its slot models. The STAR provider also offers its
+ * account's whole chat catalog, which loads on its own and possibly after the
+ * providers: until it is known, a choice outside the slots cannot be called
+ * stale, and resetting it would silently move the chat to another price.
+ */
+function providerOffersModel(provider: SavedProvider, modelId: string): boolean {
+  if (providerModelIds(provider).has(modelId)) return true
+  if (provider.presetId !== STAR_PROVIDER_PRESET_ID) return false
+  const catalog = useStarStore.getState().catalog?.chat
+  return !catalog?.length || catalog.some((model) => model.id === modelId)
+}
+
 function resolveRuntimeRefreshSelection(
   provider: SavedProvider,
   activeId: string | null,
   currentSelection: RuntimeSelection | undefined,
 ): RuntimeSelection | null {
   if (currentSelection?.providerId === provider.id) {
-    const modelIds = providerModelIds(provider)
     const modelId = resolveProviderRuntimeModelId(provider, currentSelection.modelId)
     return {
       providerId: provider.id,
-      modelId: modelIds.has(modelId)
+      modelId: providerOffersModel(provider, modelId)
         ? modelId
         : resolveProviderSlotModelId(provider, 'main'),
       ...(currentSelection.effortLevel ? { effortLevel: currentSelection.effortLevel } : {}),
