@@ -78,7 +78,7 @@ export function PromptEditor({
             only, no border: a tinted strip with an edge as well is the
             "fill + border" double the spec rules out for inset blocks. */}
         <Badge tone="danger" size="sm" wrap pill={false} className="w-full" icon={<TriangleAlert size={12} strokeWidth={2} aria-hidden="true" className="shrink-0" />}>
-          {t('promptEditor.bypassWarning')}{folderPath ? ` ${t('promptEditor.within')} ${folderPath}` : ` ${t('promptEditor.selectFolder')}`}.
+          {t('promptEditor.bypassWarning')}{folderPath ? ` ${t('promptEditor.within')} ${folderPath}` : ` ${t('promptEditor.selectFolder')}`}
         </Badge>
       </div>
     </div>
