@@ -21,6 +21,7 @@ import { FindInPageModal } from '../search/FindInPageModal'
 import { ProjectEditorModal, type ProjectEditorSubmission } from './ProjectEditorModal'
 import { SidebarTaskList } from './SidebarTaskList'
 import { SIDEBAR_PROJECT_SESSION_PREVIEW_LIMIT } from '../../lib/sessionListPagination'
+import { isPlaceholderSessionTitle, sessionTitleLabel } from '../../lib/sessionTitle'
 import { ProjectSessionList, notifyProjectHistoryAtSidebarBottom } from '@/components/layout/ProjectSessionList'
 import {
   buildSidebarTaskGroups,
@@ -1340,6 +1341,7 @@ export function Sidebar({
                                 <input
                                   autoFocus
                                   value={renameValue}
+                                  placeholder={t('session.untitled')}
                                   onChange={(e) => setRenameValue(e.target.value)}
                                   onBlur={handleFinishRename}
                                   onKeyDown={(e) => {
@@ -1368,7 +1370,7 @@ export function Sidebar({
                                     }
                                   `}
                                   aria-pressed={isBatchMode ? selectedSessionIds.has(session.id) : undefined}
-                                  title={session.title || t('tabs.untitled')}
+                                  title={sessionTitleLabel(session.title, t)}
                                 >
                                   <span className="flex min-w-0 flex-1 items-center gap-1.5">
                                     {isBatchMode ? (
@@ -1387,7 +1389,7 @@ export function Sidebar({
                                         )}
                                       </span>
                                     ) : null}
-                                    <span className="min-w-0 flex-1 truncate">{session.title || t('tabs.untitled')}</span>
+                                    <span className="min-w-0 flex-1 truncate">{sessionTitleLabel(session.title, t)}</span>
                                     {getSessionWorkspaceState(session) === 'missing' && (
                                       <span
                                         className="flex-shrink-0 text-[11px] text-[var(--color-warning)]"
@@ -1461,7 +1463,9 @@ export function Sidebar({
           <button
             onClick={() => {
               const session = sessions.find((s) => s.id === contextMenu.id)
-              handleStartRename(contextMenu.id, session?.title || '')
+              // A session nobody named carries an English stand-in as its title;
+              // the field starts empty instead of offering that to edit.
+              handleStartRename(contextMenu.id, isPlaceholderSessionTitle(session?.title) ? '' : session?.title ?? '')
             }}
             className="flex h-8 w-full items-center rounded-[var(--radius-sm)] px-2.5 text-left text-[13px] text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
           >
@@ -1628,7 +1632,7 @@ export function Sidebar({
               <ul className="max-h-40 space-y-1 overflow-y-auto rounded-[var(--radius-md)] bg-[var(--color-surface-container)] p-2">
                 {pendingBatchDeleteSessions.slice(0, 5).map((session) => (
                   <li key={session.id} className="truncate text-xs text-[var(--color-text-secondary)]">
-                    {session.title || t('tabs.untitled')}
+                    {sessionTitleLabel(session.title, t)}
                   </li>
                 ))}
                 {(pendingBatchDeleteSessionIds?.length ?? 0) > 5 && (

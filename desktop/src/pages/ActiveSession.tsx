@@ -32,6 +32,7 @@ import {
 } from '../stores/workspaceStore'
 import { useWorkspaceContentStore } from '../stores/workspaceContentStore'
 import { useTranslation } from '../i18n'
+import { sessionTitleLabel } from '../lib/sessionTitle'
 import { LoadingState } from '@/components/ui/LoadingState'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { BrandSeal } from '@/components/composite/BrandSeal'
@@ -606,7 +607,7 @@ export function ActiveSession({ sessionId, active = true }: { sessionId?: string
       ? sessionView.historyError || t('session.historyLoadFailed')
       : null
   const visibleMessageCount = messages.length > 0 ? messages.length : session?.messageCount ?? 0
-  const headerTitle = session?.title || activeTabTitle || t('session.untitled')
+  const headerTitle = sessionTitleLabel(session?.title || activeTabTitle, t, 'session.untitled')
   const currentGitInfo = sessionGitInfo?.sessionId === activeTabId ? sessionGitInfo.info : null
   const worktree = currentGitInfo?.worktree?.enabled ? currentGitInfo.worktree : null
   const worktreePath = worktree?.path || worktree?.plannedPath || null

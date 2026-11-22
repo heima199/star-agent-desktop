@@ -3976,6 +3976,7 @@ export const zh: Record<TranslationKey, string> = {
 
   // ─── 活躍會話 ──────────────────────────────────────
   'session.untitled': '未命名會話',
+  'session.newTitle': '新會話',
   'session.active': '會話活躍中',
   'session.lastUpdated': '最後更新 {time}',
   'session.messages': '{count} 條訊息',

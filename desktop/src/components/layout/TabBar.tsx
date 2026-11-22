@@ -28,6 +28,7 @@ import { getDesktopHost } from '../../lib/desktopHost'
 import { hasRunningBackgroundTasks } from '../../lib/backgroundTasks'
 import { useTeamRunningSessionIds } from '../../hooks/useTeamRunningSessionIds'
 import { collectAttentionIds, nextAttentionSessionId } from '../../lib/sessionAttention'
+import { sessionTitleLabel } from '../../lib/sessionTitle'
 import { SessionAttentionMark } from './SessionAttentionMark'
 import { TabAttentionJump } from './TabAttentionJump'
 import { WindowControls, showWindowControls } from './WindowControls'
@@ -679,7 +680,7 @@ export function TabBar() {
         {tabs.map((tab, index) => {
           const displayTitle = tab.type === 'settings'
             ? t('settings.title')
-            : tab.type === 'market' || tab.type === 'connectors' ? t('sidebar.extensions') : (tab.title || t('tabs.untitled'))
+            : tab.type === 'market' || tab.type === 'connectors' ? t('sidebar.extensions') : sessionTitleLabel(tab.title, t)
           return (
             <TabItem
               key={tab.sessionId}

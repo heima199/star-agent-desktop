@@ -10,6 +10,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { StatusDot } from '@/components/ui/Badge'
 import { useLongPress } from '../../hooks/useLongPress'
 import { formatRelativeTime } from '../../lib/formatRelativeTime'
+import { sessionTitleLabel } from '../../lib/sessionTitle'
 import { releaseWorkspaceSession } from '../../lib/workspace/releaseSession'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -143,8 +144,8 @@ export function MobileSessionList({
       <MobileBottomSheet
         open={actionSession !== null}
         onClose={closeActions}
-        title={<span className="block truncate">{actionSession?.title || t('session.untitled')}</span>}
-        ariaLabel={actionSession?.title || t('session.untitled')}
+        title={<span className="block truncate">{sessionTitleLabel(actionSession?.title, t, 'session.untitled')}</span>}
+        ariaLabel={sessionTitleLabel(actionSession?.title, t, 'session.untitled')}
         closeLabel={t('common.close')}
         testId="mobile-session-actions"
       >
@@ -227,7 +228,7 @@ function MobileSessionRow({
   const t = useTranslation()
   const longPress = useLongPress({ onLongPress: () => onLongPress(session) })
   const relativeTime = formatRelativeTime(session.modifiedAt, t)
-  const title = session.title || t('session.untitled')
+  const title = sessionTitleLabel(session.title, t, 'session.untitled')
 
   return (
     <button

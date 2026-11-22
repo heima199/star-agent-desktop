@@ -4,6 +4,7 @@ import { StatusDot } from '@/components/ui/Badge'
 import type { DesktopUiPreferencesResponse } from '../../api/desktopUiPreferences'
 import { sessionNeedsAttention } from '../../lib/sessionAttention'
 import { formatRelativeTime } from '../../lib/formatRelativeTime'
+import { sessionTitleLabel } from '../../lib/sessionTitle'
 import { resolveProjectDisplayName } from '../../stores/projectDisplayNameStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -135,7 +136,7 @@ function MobileRouteBar({ route, onBack }: { route: Exclude<MobileRoute, { kind:
     return <MobileTopBar title={t('sidebar.settings')} onBack={onBack} backLabel={t('mobile.nav.backToSessions')} />
   }
   if (route.kind === 'detail') {
-    return <MobileTopBar title={tab?.title || t('session.untitled')} onBack={onBack} activeSessionId={route.parentSessionId} />
+    return <MobileTopBar title={sessionTitleLabel(tab?.title, t, 'session.untitled')} onBack={onBack} activeSessionId={route.parentSessionId} />
   }
   return <MobileSessionBar sessionId={route.tabId} fallbackTitle={tab?.title} onBack={onBack} />
 }
@@ -184,7 +185,7 @@ function MobileSessionBar({
 
   return (
     <MobileTopBar
-      title={session?.title || fallbackTitle || t('session.untitled')}
+      title={sessionTitleLabel(session?.title || fallbackTitle, t, 'session.untitled')}
       subtitle={subtitle}
       onBack={onBack}
       backLabel={t('mobile.nav.backToSessions')}

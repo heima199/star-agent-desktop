@@ -89,6 +89,16 @@ describe('GlobalSearchModal', () => {
     expect(mockSearch).not.toHaveBeenCalled()
   })
 
+  it('names a session without a title in the interface language and opens it under its stored title', () => {
+    useSettingsStore.setState({ locale: 'zh' })
+    useSessionStore.setState({ sessions: [makeSession('s1', 'Untitled Session')] })
+    render(<GlobalSearchModal open onClose={() => {}} />)
+
+    expect(screen.queryByText('Untitled Session')).toBeNull()
+    fireEvent.click(screen.getByText('未命名会话'))
+    expect(useTabStore.getState().openTab).toHaveBeenCalledWith('s1', 'Untitled Session')
+  })
+
   it('debounces input and calls searchApi once with the latest query', async () => {
     vi.useFakeTimers()
     try {

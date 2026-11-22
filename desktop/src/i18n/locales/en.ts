@@ -3976,6 +3976,7 @@ Row 9, all 8 cells: continuing from straight down, turning left through lower-le
 
   // ─── Active Session ──────────────────────────────────────
   'session.untitled': 'Untitled Session',
+  'session.newTitle': 'New Session',
   'session.active': 'session active',
   'session.lastUpdated': 'last updated {time}',
   'session.messages': '{count} messages',

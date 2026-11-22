@@ -3979,6 +3979,7 @@ export const kr: Record<TranslationKey, string> = {
 
   // ─── Active Session ──────────────────────────────────────
   'session.untitled': '제목 없는 세션',
+  'session.newTitle': '새 세션',
   'session.active': '세션 활성',
   'session.lastUpdated': '마지막 업데이트 {time}',
   'session.messages': '{count}개의 메시지',

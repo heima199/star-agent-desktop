@@ -199,6 +199,8 @@ vi.mock('../../i18n', () => ({
       'tabs.jumpToAttention': 'Jump to the next waiting session ({count} waiting)',
       'tabs.closeTab': 'Close {title}',
       'tabs.untitled': 'Untitled',
+      'session.untitled': 'Untitled Session',
+      'session.newTitle': 'New Session',
       'settings.title': 'Localized Settings',
       'openProject.openProject': 'Open project',
       'openProject.openIn': 'Open in {target}',

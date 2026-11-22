@@ -3977,6 +3977,7 @@ export const jp: Record<TranslationKey, string> = {
 
   // ─── Active Session ──────────────────────────────────────
   'session.untitled': '無題のセッション',
+  'session.newTitle': '新しいセッション',
   'session.active': 'セッションがアクティブ',
   'session.lastUpdated': '最終更新 {time}',
   'session.messages': '{count} 件のメッセージ',

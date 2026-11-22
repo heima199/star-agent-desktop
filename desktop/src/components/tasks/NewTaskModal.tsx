@@ -22,6 +22,7 @@ import { useTranslation } from '../../i18n'
 import { describeCron, isValidCron, parseCron, type FrequencyKey } from '../../lib/cronDescribe'
 import { getSessionSeedWorkDir } from '../../lib/sessionWorkspace'
 import type { CronTask, TaskNotificationPolicy } from '../../types/task'
+import { sessionTitleLabel } from '../../lib/sessionTitle'
 
 type NotificationChannel = 'desktop' | 'telegram' | 'feishu'
 
@@ -311,7 +312,7 @@ export function NewTaskModal({ open, onClose, editTask, template }: Props) {
           <SelectField label={t('scheduledChat.runIn')} value={targetSessionId} onChange={setTargetSessionId} options={[
             { value: '', label: t('scheduledChat.selectSession') },
             ...(!sessions.some(session => session.id === targetSessionId) && targetSessionId ? [{ value: targetSessionId, label: targetSessionId }] : []),
-            ...sessions.map(session => ({ value: session.id, label: session.title || t('tabs.untitled') })),
+            ...sessions.map(session => ({ value: session.id, label: sessionTitleLabel(session.title, t) })),
           ]} />
           <p className="text-[12px] text-[var(--color-text-secondary)]">{t('scheduledChat.inherited')}</p>
           <TextArea label={t('scheduledChat.prompt')} placeholder={t('newTask.promptPlaceholder')} value={prompt} onChange={event => setPrompt(event.target.value)} />

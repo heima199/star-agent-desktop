@@ -9,6 +9,7 @@ import { sessionsApi } from '@/api/sessions'
 import { searchApi, type SessionSearchResult, type SessionMatch, type SessionMatchRole } from '../../api/search'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
+import { sessionTitleLabel } from '../../lib/sessionTitle'
 
 const DEBOUNCE_MS = 250
 const RECENT_LIMIT = 8
@@ -405,7 +406,8 @@ function ResultRow({ row, index, active, onActivate, onOpen, t }: RowProps) {
       <div className="flex h-9 w-full min-w-0 items-center gap-2.5">
         <MessageSquare size={14} strokeWidth={1.75} className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--color-text-primary)]">
-          {row.title}
+          {/* Shown as the sidebar shows it; the row keeps the stored title for opening the tab. */}
+          {sessionTitleLabel(row.title, t)}
         </span>
         {row.matchCount > 0 && (
           <span className="shrink-0 text-[12px] tabular-nums text-[var(--color-text-tertiary)]">

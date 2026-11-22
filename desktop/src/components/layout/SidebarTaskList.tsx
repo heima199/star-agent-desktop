@@ -2,6 +2,7 @@ import { SessionScheduleMark } from '@/components/tasks/SessionScheduleMark'
 import { Check, Folder, GitBranch } from 'lucide-react'
 import { Spinner } from '@/components/ui/Spinner'
 import type { TranslationKey } from '../../i18n'
+import { sessionTitleLabel } from '../../lib/sessionTitle'
 import type { SessionListItem } from '../../types/session'
 import { SessionAttentionMark } from './SessionAttentionMark'
 import { isWorktreeSession, type SidebarTaskGroup, type SidebarTaskGroupId } from './sidebarTaskGroups'
@@ -81,6 +82,7 @@ export function SidebarTaskList({
                   <input
                     autoFocus
                     value={renameValue}
+                    placeholder={t('session.untitled')}
                     onChange={(event) => onRenameChange(event.target.value)}
                     onBlur={onFinishRename}
                     onKeyDown={(event) => {
@@ -136,7 +138,7 @@ function SidebarTaskRow({
   t: Translate
 }) {
   const isWorktree = isWorktreeSession(session)
-  const title = session.title || 'Untitled'
+  const title = sessionTitleLabel(session.title, t)
 
   return (
     <button
