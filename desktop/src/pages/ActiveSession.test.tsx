@@ -2925,7 +2925,13 @@ describe('ActiveSession task polling', () => {
     // The compact hero keeps the rotating star, at 56px instead of 80px.
     const heroSeal = screen.getByTestId('empty-session-hero').querySelector('[data-testid="brand-seal"]')
     expect(heroSeal).toHaveClass('h-14', 'w-14')
-    expect(heroSeal?.querySelectorAll('picture')).toHaveLength(2)
+    // Both inks are the rotating file itself: no <picture> swaps in the still
+    // frame under reduced motion any more (logo也不动有些电脑).
+    const heroInks = Array.from(heroSeal?.querySelectorAll('img') ?? []).map(image => image.getAttribute('src') ?? '')
+    expect(heroInks).toHaveLength(2)
+    expect(heroInks[0]).toMatch(/star-glass-black\.svg$/)
+    expect(heroInks[1]).toMatch(/star-glass-white\.svg$/)
+    expect(heroSeal?.querySelector('picture')).toBeNull()
     expect(screen.getByTestId('session-terminal-panel')).toHaveStyle({ height: '420px' })
     expect(screen.getByTestId('terminal-resize-handle')).toHaveAttribute('aria-valuemax', '760')
   })

@@ -37,18 +37,24 @@ describe('STAR brand name rules', () => {
     }
   })
 
-  it('names the products without doubling the last word', () => {
-    expect(starBrandProductName('PRIVO', 'Agent')).toBe('PRIVO Agent')
+  // The desktop app is "X STAR WORK" since 1.2.0 ("X Agent" before); the IDE stays "X Code".
+  it('names the products without doubling the words the name already ends with', () => {
+    expect(starBrandProductName('PRIVO', 'Agent')).toBe('PRIVO STAR WORK')
     expect(starBrandProductName('PRIVO', 'Code')).toBe('PRIVO Code')
-    expect(starBrandProductName('PRIVO Agent', 'Agent')).toBe('PRIVO Agent')
+    expect(starBrandProductName('PRIVO STAR WORK', 'Agent')).toBe('PRIVO STAR WORK')
+    expect(starBrandProductName('privo star work', 'Agent')).toBe('privo star work')
+    expect(starBrandProductName('PRIVO STAR', 'Agent')).toBe('PRIVO STAR WORK')
     expect(starBrandProductName('privo code', 'Code')).toBe('privo code')
     expect(starBrandProductName('Codex', 'Code')).toBe('Codex Code')
-    expect(starBrandProductName(' ', 'Agent')).toBe('STAR Agent')
+    expect(starBrandProductName('Lodestar', 'Agent')).toBe('Lodestar STAR WORK')
+    // The default name is STAR: "STAR WORK", never "STAR STAR WORK".
+    expect(starBrandProductName(' ', 'Agent')).toBe('STAR WORK')
+    expect(starBrandProductName(' ', 'Code')).toBe('STAR Code')
   })
 
   it('fills the brand placeholders and leaves other braces alone', () => {
     expect(formatStarBrand('登录 {brand} 账号 · {brandAgent} · {brandCode} · {0} {name}', 'PRIVO'))
-      .toBe('登录 PRIVO 账号 · PRIVO Agent · PRIVO Code · {0} {name}')
+      .toBe('登录 PRIVO 账号 · PRIVO STAR WORK · PRIVO Code · {0} {name}')
   })
 
   it('reads branding.appName from a desktop config answer', () => {

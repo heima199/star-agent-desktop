@@ -192,7 +192,13 @@ describe('Content-only pages render without errors', () => {
     // 这里logo需放大，要那个动态svg: above the title, the rotating star at 80px.
     const heroSeal = container.querySelector('[data-testid="brand-seal"]')
     expect(heroSeal).toHaveClass('h-20', 'w-20')
-    expect(heroSeal?.querySelectorAll('picture')).toHaveLength(2)
+    // Both inks are the rotating file itself: no <picture> swaps in the still
+    // frame under reduced motion any more (logo也不动有些电脑).
+    const heroInks = Array.from(heroSeal?.querySelectorAll('img') ?? []).map(image => image.getAttribute('src') ?? '')
+    expect(heroInks).toHaveLength(2)
+    expect(heroInks[0]).toMatch(/star-glass-black\.svg$/)
+    expect(heroInks[1]).toMatch(/star-glass-white\.svg$/)
+    expect(heroSeal?.querySelector('picture')).toBeNull()
   })
 
   it('EmptySession draws no context usage before a session is created', async () => {

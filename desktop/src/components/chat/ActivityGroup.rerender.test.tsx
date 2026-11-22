@@ -199,7 +199,8 @@ describe('ActivityGroup re-rendering while a run streams (#1480)', () => {
       />,
     )
     expect(rendered).toEqual(['bash-2'])
-    expect(screen.getByText('1 failed')).toBeInTheDocument()
+    // The header shows failures as a red mark that carries the count as its name.
+    expect(screen.getByRole('img', { name: '1 failed' })).toHaveAttribute('data-testid', 'activity-failed-mark')
   })
 
   it('re-renders a row when its approval state flips', () => {

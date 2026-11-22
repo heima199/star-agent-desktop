@@ -76,7 +76,7 @@ describe('DesktopUiPreferencesService', () => {
       schemaVersion: 6,
       profile: {
         displayName: 'cc-haha',
-        subtitle: 'github.com/NanmiCoder/cc-haha',
+        subtitle: 'STAR',
         avatarFile: null,
         avatarUpdatedAt: null,
       },
@@ -132,7 +132,7 @@ describe('DesktopUiPreferencesService', () => {
       futureField: { keep: true },
       profile: {
         displayName: 'cc-haha',
-        subtitle: 'github.com/NanmiCoder/cc-haha',
+        subtitle: 'STAR',
         avatarFile: null,
         avatarUpdatedAt: null,
       },
@@ -154,7 +154,7 @@ describe('DesktopUiPreferencesService', () => {
       futureField: { keep: true },
       profile: {
         displayName: 'cc-haha',
-        subtitle: 'github.com/NanmiCoder/cc-haha',
+        subtitle: 'STAR',
         avatarFile: null,
         avatarUpdatedAt: null,
       },
@@ -589,7 +589,7 @@ describe('desktop UI preferences API', () => {
         schemaVersion: 6,
         profile: {
           displayName: 'cc-haha',
-          subtitle: 'github.com/NanmiCoder/cc-haha',
+          subtitle: 'STAR',
           avatarFile: null,
           avatarUpdatedAt: null,
         },
@@ -617,7 +617,7 @@ describe('desktop UI preferences API', () => {
         schemaVersion: 6,
         profile: {
           displayName: 'cc-haha',
-          subtitle: 'github.com/NanmiCoder/cc-haha',
+          subtitle: 'STAR',
           avatarFile: null,
           avatarUpdatedAt: null,
         },
