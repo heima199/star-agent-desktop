@@ -33,6 +33,7 @@ describe('workspace browser attach policy', () => {
       plugins: true,
       webviewTag: true,
       zoomFactor: 3,
+      transparent: true,
     }
     expect(applyWorkspaceBrowserAttachPolicy(requested, browserAttach, { preload: PRELOAD })).toBe(true)
     expect(requested).toEqual({
@@ -47,6 +48,9 @@ describe('workspace browser attach policy', () => {
       plugins: false,
       webviewTag: false,
       zoomFactor: 1,
+      // Opaque: a page with no background of its own must not show its dark
+      // text on the app's dark panel.
+      transparent: false,
     })
   })
 

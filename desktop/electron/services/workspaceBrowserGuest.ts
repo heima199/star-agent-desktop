@@ -56,6 +56,11 @@ export function applyWorkspaceBrowserAttachPolicy(
     // Electron starts a guest at its embedder's zoom. App zoom never applied to
     // the old native view, so a page still starts at 100%.
     zoomFactor: 1,
+    // A guest's background is transparent unless this is off, and a page that
+    // sets none of its own then shows its dark text on the app's dark panel.
+    // Opaque gives every page the canvas it was written for: white, or the
+    // dark one when the page declares a dark color scheme.
+    transparent: false,
   })
   return true
 }
