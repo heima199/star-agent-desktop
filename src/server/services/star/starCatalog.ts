@@ -123,6 +123,21 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+/**
+ * The console lists one entry per channel of a media model, highest priority
+ * first, and charges the price of the first. The later entries are the same id
+ * at another price: the picker showed "GPT Image 2 · 10 积分" and
+ * "GPT Image 2 · 4 积分" (2026-11-22), and either one sent the same id.
+ */
+function firstOfEachId<T extends { id: string }>(list: T[]): T[] {
+  const seen = new Set<string>()
+  return list.filter(item => {
+    if (seen.has(item.id)) return false
+    seen.add(item.id)
+    return true
+  })
+}
+
 /** Merge `/chat/models` brands with the desktop media lists. */
 export function flattenStarCatalog(brandsRaw: unknown, desktopRaw: unknown): StarCatalog {
   const settings = loadStarSettings()
@@ -214,8 +229,8 @@ export function flattenStarCatalog(brandsRaw: unknown, desktopRaw: unknown): Sta
     fetchedAt: Date.now(),
     brands,
     chat: [...chat.values()],
-    image,
-    video,
+    image: firstOfEachId(image),
+    video: firstOfEachId(video),
     videoLimits: {
       maxReferenceImages: num(videoBlock.maxReferenceImages) ?? 3,
       maxReferenceVideos: num(videoBlock.maxReferenceVideos) ?? 0,
@@ -231,6 +246,9 @@ export function readStarCatalog(): StarCatalog | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(catalogPath(), 'utf-8')) as StarCatalog
     if (!parsed || !Array.isArray(parsed.chat)) return null
+    // A file written before the media lists were de-duplicated.
+    if (Array.isArray(parsed.image)) parsed.image = firstOfEachId(parsed.image)
+    if (Array.isArray(parsed.video)) parsed.video = firstOfEachId(parsed.video)
     if (parsed.version !== STAR_CATALOG_VERSION && Date.now() - staleRefreshAt > STALE_REFRESH_RETRY_MS) {
       staleRefreshAt = Date.now()
       void refreshStarCatalog({ force: true }).catch(() => undefined)
