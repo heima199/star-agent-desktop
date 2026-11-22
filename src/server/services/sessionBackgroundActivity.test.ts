@@ -169,6 +169,36 @@ test('reads the CLI original output location after cwd changes without trusting 
   expect((await f.read()).text).toBe('server listening\n')
 })
 
+test('reads an output file recorded under another spelling of the temporary root', async () => {
+  // The CLI records the path as its own root is spelled. On Windows that is the
+  // short (8.3) form of %TEMP% for a long user name, on macOS a symlinked /var;
+  // only the real path expands either.
+  let spelled = await fs.mkdtemp(path.join(os.tmpdir(), 'task-output-spelling-'))
+  const real = await fs.realpath(spelled)
+  directories.push(real)
+  if (spelled === real) {
+    spelled = `${real}-alias`
+    await fs.symlink(real, spelled, 'junction')
+    directories.push(spelled)
+  }
+  const cwd = path.join(real, 'work')
+  const recorded = path.join(spelled, sanitizePath(cwd), 'session-a', 'tasks', 'shell-task.output')
+  await fs.mkdir(path.dirname(recorded), { recursive: true })
+  await fs.writeFile(recorded, 'server listening\n')
+  const messages: MessageEntry[] = [
+    { id: 'use', type: 'tool_use', cwd, timestamp: '2026-10-24T00:00:00Z', content: [{ type: 'tool_use', id: 'bash-use', name: 'Bash', input: { command: 'bun run server.ts', run_in_background: true } }] },
+    { id: 'result', type: 'tool_result', cwd, timestamp: '2026-10-24T00:00:01Z', toolUseResult: { backgroundTaskId: 'shell-task' }, content: [{ type: 'tool_result', tool_use_id: 'bash-use', content: `Command running in background with ID: shell-task. Output is being written to: ${recorded}` }] },
+  ]
+  const read = () => readSessionBackgroundTaskOutput('session-a', 'shell-task', messages, undefined, spelled)
+  expect((await read()).text).toBe('server listening\n')
+  // The other spelling is no way out of the fixed task directory.
+  const result = (messages[1]!.content as any[])[0]
+  result.content = `Command running in background with ID: shell-task. Output is being written to: ${path.join(spelled, 'settings.json')}`
+  await expect(read()).rejects.toMatchObject({ statusCode: 403 })
+  result.content = `Command running in background with ID: shell-task. Output is being written to: ${path.join(spelled, '..', path.basename(real), sanitizePath(cwd), 'session-b', 'tasks', 'shell-task.output')}`
+  await expect(read()).rejects.toMatchObject({ statusCode: 403 })
+})
+
 test.skipIf(process.platform === 'win32')('rejects final symlinks, ancestor redirection and hardlinks to protected data', async () => {
   const f = await outputFixture()
   const secret = path.join(f.root, 'settings.json')

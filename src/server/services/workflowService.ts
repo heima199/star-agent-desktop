@@ -660,7 +660,12 @@ class WorkflowService {
     let handle: Awaited<ReturnType<typeof fs.open>> | undefined
     try {
       const realPath = await fs.realpath(candidate)
-      if (!isExpectedTaskOutputPath(realPath, root, sessionId, notification.taskId)) {
+      // A real path can be spelled differently from `root` without leaving it:
+      // Windows expands a short (8.3) name such as ADMINI~1, which is how
+      // %TEMP% is spelled for every user name longer than eight characters.
+      // So the real path is held against the real root.
+      const realRoot = await fs.realpath(root)
+      if (!isExpectedTaskOutputPath(realPath, realRoot, sessionId, notification.taskId)) {
         return []
       }
       const stats = await fs.lstat(candidate)

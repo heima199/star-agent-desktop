@@ -138,6 +138,20 @@ export async function readSessionBackgroundTaskOutputFromTranscript(
   return readSessionBackgroundTaskOutput(sessionId, taskId, [...uses, selected], signal)
 }
 
+/**
+ * The CLI records its output file as its own temporary root is spelled, and that
+ * spelling is not always the real path: Windows keeps a short (8.3) name such as
+ * ADMINI~1 in %TEMP% for every user name longer than eight characters, and only
+ * the real path expands it. The checks below compare against the real root, so
+ * a path beneath the root as spelled is moved onto the real one first.
+ */
+function respellBeneathRoot(file: string, spelledRoot: string, realRoot: string): string {
+  if (!path.isAbsolute(file)) return file
+  const relative = path.relative(path.resolve(spelledRoot), file)
+  if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) return file
+  return path.join(realRoot, relative)
+}
+
 /** Read only this session's proven shell output. Never use diskOutput's process-global CLI session directory in the multi-session server. */
 export async function readSessionBackgroundTaskOutput(
   sessionId: string,
@@ -157,7 +171,9 @@ export async function readSessionBackgroundTaskOutput(
     const root = await fs.realpath(outputRoot)
     // CLI task directories survive cwd changes. Prefer its own result's location,
     // but accept only the fixed task-file shape beneath the trusted temporary root.
-    const candidate = location.outputFile ?? path.join(root, sanitizePath(location.cwd), sessionId, 'tasks', `${taskId}.output`)
+    const candidate = location.outputFile
+      ? respellBeneathRoot(location.outputFile, outputRoot, root)
+      : path.join(root, sanitizePath(location.cwd), sessionId, 'tasks', `${taskId}.output`)
     const relative = path.relative(root, candidate)
     const parts = relative.split(path.sep)
     if (!path.isAbsolute(candidate) || candidate.includes('\0') || path.isAbsolute(relative) || parts.length !== 4 || !parts[0] || parts[0] === '..' || parts[1] !== sessionId || parts[2] !== 'tasks' || parts[3] !== `${taskId}.output`) throw forbidden()
