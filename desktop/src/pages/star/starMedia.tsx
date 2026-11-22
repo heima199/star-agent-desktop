@@ -143,15 +143,17 @@ export function StarTaskCard({ task, onUseAsReference }: { task: StarMediaTask; 
   const [viewing, setViewing] = useState<number | null>(null)
   const modelLabel = useStarModelLabel(task.model)
   const active = task.status !== 'succeeded' && task.status !== 'failed'
+  const firstFile = task.outputs.find(output => output.file)?.file
   const remove = async () => {
     try {
       await starApi.deleteTask(task.id, false)
       useStarStore.getState().removeTask(task.id)
+      // Only the record goes. The card and its entry in 我的文件 vanish with it, so say where the result still is.
+      toast('success', firstFile ? '记录已删除，生成的文件仍保留在输出文件夹里' : '记录已删除')
     } catch (error) {
       toast('error', starErrorText(error))
     }
   }
-  const firstFile = task.outputs.find(output => output.file)?.file
   return (
     <div className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] p-3" data-testid="star-task-card">
       <div className="flex items-start gap-2">
