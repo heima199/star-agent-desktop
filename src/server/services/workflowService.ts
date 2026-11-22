@@ -34,12 +34,19 @@ import type {
   WorkflowPhaseMeta,
   WorkflowProgressEvent,
 } from '../../utils/workflows/types.js'
-import { readWorkflowTranscriptProjection } from './workflowTranscriptProjection.js'
+import {
+  readWorkflowTranscriptProjection,
+  WorkflowTranscriptChangedError,
+} from './workflowTranscriptProjection.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
   sessionService,
   type SessionTaskNotification,
 } from './sessionService.js'
+
+/** How many times a transcript that changed under the scan is read, and the first pause between reads. */
+const WORKFLOW_PROJECTION_ATTEMPTS = 4
+const WORKFLOW_PROJECTION_RETRY_MS = 60
 
 export type WorkflowDefinitionSummary = {
   name: string
@@ -954,7 +961,7 @@ class WorkflowService {
       seenPaths.add(file.filePath)
       let projection
       try {
-        projection = await readWorkflowTranscriptProjection(file.filePath)
+        projection = await this.readSettledWorkflowProjection(file.filePath)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
         throw error
@@ -971,6 +978,30 @@ class WorkflowService {
       }
     }
     return lifecycle
+  }
+
+  /**
+   * A transcript still being written can change under the scan; a session
+   * opened while its process starts runs into exactly that. The desktop asks
+   * for a session's runs once and does not ask again, so the scan is repeated
+   * here a few times, and a transcript that never settles is reported as busy
+   * rather than as a server fault.
+   */
+  private async readSettledWorkflowProjection(
+    filePath: string,
+    read: typeof readWorkflowTranscriptProjection = readWorkflowTranscriptProjection,
+  ): ReturnType<typeof readWorkflowTranscriptProjection> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await read(filePath)
+      } catch (error) {
+        if (!(error instanceof WorkflowTranscriptChangedError)) throw error
+        if (attempt >= WORKFLOW_PROJECTION_ATTEMPTS) {
+          throw new ApiError(503, 'Workflow history is changing; retry shortly', 'WORKFLOW_HISTORY_INCOMPLETE')
+        }
+        await new Promise(resolve => setTimeout(resolve, WORKFLOW_PROJECTION_RETRY_MS * attempt))
+      }
+    }
   }
 
   private collectWorkflowLifecycleEntry(

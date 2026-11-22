@@ -25,6 +25,18 @@ type CachedProjection = Projection & {
 const cache = new Map<string, CachedProjection>()
 const pending = new Map<string, Promise<Projection>>()
 
+/**
+ * The transcript was truncated, replaced or rewritten while it was being read.
+ * The session's own process writes this file, so a reader that runs into this
+ * met a moment to wait out, not a fault.
+ */
+export class WorkflowTranscriptChangedError extends Error {
+  constructor() {
+    super('Workflow transcript changed during projection')
+    this.name = 'WorkflowTranscriptChangedError'
+  }
+}
+
 /** A bounded, incremental source for workflow lifecycle reconstruction. */
 export async function readWorkflowTranscriptProjection(filePath: string): Promise<Projection> {
   const existing = pending.get(filePath)
@@ -51,7 +63,7 @@ async function readProjection(filePath: string): Promise<Projection> {
       const length = Math.min(WINDOW_BYTES, end)
       const bytes = Buffer.alloc(length)
       const result = await handle.read(bytes, 0, length, end - length)
-      if (result.bytesRead !== length) throw new Error('Workflow transcript changed during projection')
+      if (result.bytesRead !== length) throw new WorkflowTranscriptChangedError()
       return createHash('sha256').update(bytes).digest('hex')
     }
     const canAppend = previous?.identity === identity && size > previous.size &&
@@ -73,7 +85,7 @@ async function readProjection(filePath: string): Promise<Projection> {
     const chunk = Buffer.allocUnsafe(128 * 1024)
     while (position < size) {
       const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, size - position), position)
-      if (!bytesRead) throw new Error('Workflow transcript changed during projection')
+      if (!bytesRead) throw new WorkflowTranscriptChangedError()
       state.readBytes += bytesRead
       let start = 0
       while (start < bytesRead) {
@@ -106,7 +118,7 @@ async function readProjection(filePath: string): Promise<Projection> {
       after.size < before.size || current.size < before.size ||
       (after.size === before.size && after.mtimeNs !== before.mtimeNs) ||
       (current.size === before.size && current.mtimeNs !== before.mtimeNs)) {
-      throw new Error('Workflow transcript changed during projection')
+      throw new WorkflowTranscriptChangedError()
     }
     state.firstHash = await windowHash(Math.min(WINDOW_BYTES, size))
     state.boundaryHash = await windowHash(state.indexedBytes)

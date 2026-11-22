@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises'
 import { workflowService } from './workflowService.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readWorkflowTranscriptProjection } from './workflowTranscriptProjection.js'
+import { readWorkflowTranscriptProjection, WorkflowTranscriptChangedError } from './workflowTranscriptProjection.js'
 
 let dir: string
 beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'workflow-projection-')) })
@@ -60,4 +60,32 @@ test('workflow reconstruction consumes projected evidence without a whole-file r
     expect(lifecycle.launchesByRunId.has('wf_run')).toBe(true)
     expect(readAll).not.toHaveBeenCalled()
   } finally { readAll.mockRestore() }
+})
+
+test('a transcript that changes under the scan is read again, and one that never settles is reported busy', async () => {
+  const service = workflowService as unknown as {
+    readSettledWorkflowProjection(filePath: string, read: (filePath: string) => Promise<unknown>): Promise<unknown>
+  }
+  const settled = { messages: [], complete: true, sourceVersion: 'v', readBytes: 0 }
+  let reads = 0
+  expect(await service.readSettledWorkflowProjection('session.jsonl', async () => {
+    if (++reads < 3) throw new WorkflowTranscriptChangedError()
+    return settled
+  })).toBe(settled)
+  expect(reads).toBe(3)
+
+  reads = 0
+  await expect(service.readSettledWorkflowProjection('session.jsonl', async () => {
+    reads++
+    throw new WorkflowTranscriptChangedError()
+  })).rejects.toMatchObject({ statusCode: 503, code: 'WORKFLOW_HISTORY_INCOMPLETE' })
+  expect(reads).toBe(4)
+
+  // Anything else is not a moment to wait out.
+  reads = 0
+  await expect(service.readSettledWorkflowProjection('session.jsonl', async () => {
+    reads++
+    throw new Error('disk failure')
+  })).rejects.toThrow('disk failure')
+  expect(reads).toBe(1)
 })
