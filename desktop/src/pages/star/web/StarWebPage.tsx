@@ -7,6 +7,7 @@ import {
   WORKSPACE_BROWSER_INITIAL_SRC,
   WORKSPACE_BROWSER_PARTITION,
 } from '../../../lib/workspace/browserGuestContract'
+import { workspaceBrowserErrorText as errorText } from '../../../lib/workspace/browserErrorText'
 import { subscribeWorkspaceBrowserEvents, workspaceBrowserHost } from '../../../lib/workspace/browserHost'
 import { useTabStore, type Tab } from '../../../stores/tabStore'
 
@@ -30,10 +31,6 @@ type PageError = { message: string; url: string | null }
  * the count).
  */
 let pageSequence = 0
-
-function errorText(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason)
-}
 
 /**
  * A 'star-web' tab: one site shown inside the app (the sidebar 推荐 entries).

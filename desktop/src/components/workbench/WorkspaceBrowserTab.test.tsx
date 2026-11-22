@@ -367,6 +367,18 @@ describe('lifecycle readiness', () => {
     fireEvent.submit(address.closest('form')!)
     await waitFor(() => expect(currentTab(tab.id).loadError).toBe('navigation denied'))
   })
+
+  it('names a failed load as the load event does, without the wrapping of the call that carried it', async () => {
+    const tab = openBrowserTab()
+    await renderReady(<WorkspaceBrowserTab sessionId={SESSION} tab={tab} active />)
+    host.navigate.mockRejectedValueOnce(new Error(
+      "Error invoking remote method 'desktop:workspace-browser:navigate': Error: ERR_CONNECTION_REFUSED (-102) loading 'https://refused.test/'",
+    ))
+    const address = screen.getByTestId('workspace-browser-address')
+    fireEvent.change(address, { target: { value: 'https://refused.test/' } })
+    fireEvent.submit(address.closest('form')!)
+    await waitFor(() => expect(currentTab(tab.id).loadError).toBe('ERR_CONNECTION_REFUSED'))
+  })
 })
 
 async function renderReady(ui: Parameters<typeof render>[0]) {

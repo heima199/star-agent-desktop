@@ -27,6 +27,7 @@ import {
   isWorkspaceBrowserAvailable,
   workspaceBrowserHost,
 } from '../../lib/workspace/browserHost'
+import { workspaceBrowserErrorText } from '../../lib/workspace/browserErrorText'
 import {
   ensureWorkspaceBrowserGuest,
   isWorkspaceBrowserGuestRegistered,
@@ -165,7 +166,7 @@ export function WorkspaceBrowserTab({ sessionId, tab, active }: WorkspaceBrowser
     const lifetime = lifetimeRef.current
     if (lifetime?.id !== browserTabId || lifetime.cancelled || !stillOwned()) return
     useWorkspaceStore.getState().updateBrowserTab(sessionId, browserTabId, {
-      loadError: error instanceof Error ? error.message : String(error),
+      loadError: workspaceBrowserErrorText(error),
     })
   }, [browserTabId, sessionId, stillOwned])
   const runCommand = (command: () => Promise<unknown>) => {
@@ -398,7 +399,7 @@ export function WorkspaceBrowserTab({ sessionId, tab, active }: WorkspaceBrowser
     } catch (error) {
       // A menu failure does not mean the website failed to load. Keep the guest
       // visible and expose the command error in the app chrome.
-      if (isCurrent()) setMenuError(error instanceof Error ? error.message : String(error))
+      if (isCurrent()) setMenuError(workspaceBrowserErrorText(error))
     } finally {
       if (isCurrent()) setMenuOpen(false)
       if (menuRequestRef.current === request) menuRequestRef.current = null
