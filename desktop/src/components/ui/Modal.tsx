@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 
@@ -36,19 +36,34 @@ export function Modal({
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
 
+  // What gets focus back on close. Read in the render that opens the dialog,
+  // not in the effect below: a field with `autoFocus` takes focus while the
+  // dialog mounts, before any effect runs, and would be taken for the trigger.
+  const [wasOpen, setWasOpen] = useState(false)
+  const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null)
+  if (open !== wasOpen) {
+    setWasOpen(open)
+    setReturnFocus(open && document.activeElement instanceof HTMLElement ? document.activeElement : null)
+  }
+
   useEffect(() => {
     if (!open) return
-    const previousFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null
     const dialog = dialogRef.current
-    const firstFocusable = dialog?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
-    ;(firstFocusable ?? dialog)?.focus()
+    // A field that asked for focus already has it. Moving on to the first
+    // control, the close button, would leave a form that cannot be typed into
+    // without a click.
+    if (dialog && !dialog.contains(document.activeElement)) {
+      (dialog.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ?? dialog).focus()
+    }
 
     return () => {
-      if (previousFocus?.isConnected) previousFocus.focus()
+      // Still in the document: nothing closed, the effect is only being re-run
+      // (StrictMode does that once in development). Handing focus back here
+      // would take it out of the open dialog.
+      if (dialog?.isConnected) return
+      if (returnFocus?.isConnected) returnFocus.focus()
     }
-  }, [open])
+  }, [open, returnFocus])
 
   useEffect(() => {
     if (!open) return

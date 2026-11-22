@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Modal } from './Modal'
@@ -121,6 +122,56 @@ describe('Modal', () => {
     close.focus()
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
     expect(document.activeElement).toBe(last)
+
+    rerender(view(false))
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+  })
+
+  it('leaves focus on the field that asked for it, and still restores the trigger after close', async () => {
+    // The field focuses itself while the dialog mounts, before the dialog's own
+    // effect runs. That effect used to move focus on to the close button, so a
+    // form could not be typed into without a click, and it then took the field
+    // for the trigger, so nothing got focus back on close.
+    const view = (open: boolean) => (
+      <>
+        <button type="button">New base</button>
+        <Modal open={open} onClose={vi.fn()} title="New base">
+          <input aria-label="Base name" autoFocus />
+          <button type="button">Create</button>
+        </Modal>
+      </>
+    )
+    const { rerender } = render(view(false))
+    const trigger = screen.getByRole('button', { name: 'New base' })
+    trigger.focus()
+
+    rerender(view(true))
+    const dialog = await screen.findByRole('dialog', { name: 'New base' })
+    expect(document.activeElement).toBe(within(dialog).getByRole('textbox', { name: 'Base name' }))
+
+    rerender(view(false))
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+  })
+
+  it('keeps that field focused when StrictMode runs the effects of a newly mounted dialog twice', async () => {
+    // The extra cleanup must not hand focus back to the trigger: the dialog is
+    // still open, and the second run would then settle on the close button.
+    const view = (open: boolean) => (
+      <StrictMode>
+        <button type="button">New base</button>
+        {open ? (
+          <Modal open onClose={vi.fn()} title="New base">
+            <input aria-label="Base name" autoFocus />
+          </Modal>
+        ) : null}
+      </StrictMode>
+    )
+    const { rerender } = render(view(false))
+    const trigger = screen.getByRole('button', { name: 'New base' })
+    trigger.focus()
+
+    rerender(view(true))
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Base name' }))
 
     rerender(view(false))
     await waitFor(() => expect(document.activeElement).toBe(trigger))
