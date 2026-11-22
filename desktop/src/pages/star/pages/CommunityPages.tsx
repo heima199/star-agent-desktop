@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, BookOpen, Copy, FileText, FolderOpen, Library, Lightbulb, Loader2, MessageSquarePlus, Plus, Search, Trash2, Upload } from 'lucide-react'
+import { ArrowLeft, BookOpen, Copy, FileText, FolderOpen, Library, Lightbulb, Loader2, MessageSquarePlus, Pencil, Plus, Search, Trash2, Upload } from 'lucide-react'
 import { starApi, starErrorText, type KnowledgeBase, type StarPlazaItem } from '@/api/star'
 import { useBrokenImages, useInfiniteScroll, usePlazaFeed } from '../starFeed'
 import { FeedCover, FeedWall } from '../FeedWall'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Modal } from '@/components/ui/Modal'
 import { getDesktopHost } from '@/lib/desktopHost'
+import { formatBytes } from '@/lib/formatBytes'
 import { seedStarComposer } from '../../../components/star/starComposerSeed'
 import { useStarBrand } from '../../../stores/starBrandStore'
 import { STAR_CREATE_DRAFT_SLOT, useStarCreateStore } from '../../../stores/starCreateStore'
@@ -90,14 +92,77 @@ export function InspirationPage() {
 
 // ─── 知识库 ────────────────────────────────────────────────
 
+type KnowledgeBaseFields = { name: string; description: string }
+
+/**
+ * The name and purpose of a knowledge base, for a new one and an existing one
+ * alike. Rendered only while it is open, so it always starts from `initial`.
+ */
+function KnowledgeBaseForm({ title, submitLabel, initial, onClose, onSubmit }: {
+  title: string
+  submitLabel: string
+  initial?: KnowledgeBaseFields
+  onClose: () => void
+  /** Resolves once saved, and the caller closes the form. A rejection is shown and the form stays. */
+  onSubmit: (fields: KnowledgeBaseFields) => Promise<void>
+}) {
+  const [name, setName] = useState(initial?.name ?? '')
+  const [description, setDescription] = useState(initial?.description ?? '')
+  const [saving, setSaving] = useState(false)
+  const ready = name.trim() !== '' && !saving
+
+  const submit = async () => {
+    if (!ready) return
+    setSaving(true)
+    try {
+      await onSubmit({ name: name.trim(), description: description.trim() })
+    } catch (error) {
+      toast('error', starErrorText(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={title} width={460}
+      footer={<div className="flex w-full justify-end gap-2"><button type="button" onClick={onClose} className="h-8 rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 text-[13px]">取消</button><button type="button" disabled={!ready} onClick={() => void submit()} className="h-8 rounded-[var(--radius-md)] bg-[var(--color-btn-primary-bg)] px-3 text-[13px] font-medium text-[var(--color-btn-primary-fg)] disabled:opacity-50">{submitLabel}</button></div>}>
+      <div className="space-y-3 text-[13px]">
+        {/* The lengths are the ones the local service keeps; anything longer would be cut without a word. */}
+        <input autoFocus value={name} maxLength={60} onChange={event => setName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) void submit() }} placeholder="名称，例如：产品手册" className="h-9 w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 outline-none" />
+        <textarea value={description} maxLength={500} onChange={event => setDescription(event.target.value)} rows={3} placeholder="用途说明（可选）" className="w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2 outline-none" />
+      </div>
+    </Modal>
+  )
+}
+
 function KnowledgeDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const brand = useStarBrand()
   const [base, setBase] = useState<KnowledgeBase | null>(null)
   const [uploading, setUploading] = useState(0)
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<{ docId: string; name: string; snippet: string }[] | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   useEffect(() => { void starApi.knowledgeBase(id).then(result => setBase(result.base)).catch(error => toast('error', starErrorText(error))) }, [id])
+
+  const save = async (fields: KnowledgeBaseFields) => {
+    setBase((await starApi.updateKnowledgeBase(id, fields)).base)
+    setEditing(false)
+  }
+  const remove = async () => {
+    setDeleting(true)
+    try {
+      await starApi.deleteKnowledgeBase(id)
+    } catch (error) {
+      toast('error', starErrorText(error))
+      setDeleting(false)
+      return
+    }
+    toast('success', '知识库已删除')
+    onBack()
+  }
 
   const upload = async (files: FileList) => {
     for (const file of Array.from(files)) {
@@ -130,6 +195,8 @@ function KnowledgeDetail({ id, onBack }: { id: string; onBack: () => void }) {
         </div>
         <button type="button" onClick={() => void getDesktopHost().shell.openPath(base.dir)} className="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 text-[13px]"><FolderOpen size={14} aria-hidden="true" />打开文件夹</button>
         <button type="button" onClick={() => fileRef.current?.click()} className="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 text-[13px]">{uploading ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Upload size={14} aria-hidden="true" />}上传文档</button>
+        <button type="button" onClick={() => setEditing(true)} className="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 text-[13px]"><Pencil size={14} aria-hidden="true" />编辑</button>
+        <button type="button" aria-label="删除知识库" onClick={() => setConfirmingDelete(true)} className="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 text-[13px] hover:border-[var(--color-error)] hover:text-[var(--color-error)]"><Trash2 size={14} aria-hidden="true" />删除</button>
         <button type="button" onClick={() => seedStarComposer(`请基于知识库「${base.name}」回答：先在 text/ 目录中检索相关内容，回答时注明出处文件。\n问题：`, { workDir: base.dir })} className="inline-flex h-8 items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--color-btn-primary-bg)] px-3 text-[13px] font-medium text-[var(--color-btn-primary-fg)]"><MessageSquarePlus size={14} aria-hidden="true" />在对话中使用</button>
         <input ref={fileRef} type="file" multiple className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.json,.html" onChange={event => { if (event.target.files?.length) void upload(event.target.files); event.target.value = '' }} />
       </div>
@@ -153,12 +220,24 @@ function KnowledgeDetail({ id, onBack }: { id: string; onBack: () => void }) {
             <FileText size={16} className="shrink-0 text-[var(--color-text-tertiary)]" aria-hidden="true" />
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] text-[var(--color-text-primary)]">{doc.name}</div>
-              <div className="text-[11px] text-[var(--color-text-tertiary)]">{(doc.size / 1024).toFixed(0)} KB · {doc.chars.toLocaleString()} 字 · {formatDate(doc.addedAt)}{doc.error ? ` · 解析失败：${doc.error}` : ''}</div>
+              <div className="text-[11px] text-[var(--color-text-tertiary)]">{formatBytes(doc.size)} · {doc.chars.toLocaleString()} 字 · {formatDate(doc.addedAt)}{doc.error ? ` · 解析失败：${doc.error}` : ''}</div>
             </div>
             <button type="button" aria-label={`删除 ${doc.name}`} onClick={() => void starApi.deleteKnowledgeDoc(id, doc.id).then(result => setBase(result.base)).catch(error => toast('error', starErrorText(error)))} className="rounded p-1 text-[var(--color-text-tertiary)] hover:text-[var(--color-error)]"><Trash2 size={14} aria-hidden="true" /></button>
           </div>
         ))}
       </div>
+      {editing ? <KnowledgeBaseForm title="编辑知识库" submitLabel="保存" initial={{ name: base.name, description: base.description }} onClose={() => setEditing(false)} onSubmit={save} /> : null}
+      <ConfirmDialog
+        open={confirmingDelete}
+        onClose={() => setConfirmingDelete(false)}
+        onConfirm={remove}
+        title="删除知识库"
+        // The local service moves the folder aside instead of erasing it; saying so tells the user a slip can be undone.
+        body={`确定删除「${base.name}」吗？${base.docs.length ? `其中的 ${base.docs.length} 篇文档会一起删除。` : ''}删除的内容会先移到知识库文件夹里的 .trash 目录，需要时可以手动找回。`}
+        confirmLabel="删除"
+        cancelLabel="取消"
+        loading={deleting}
+      />
     </div>
   )
 }
@@ -168,20 +247,12 @@ export function KnowledgePage() {
   const bases = useLoad(() => starApi.knowledgeBases(), 'kb')
   const [selected, setSelected] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
 
-  const create = async () => {
-    try {
-      const { base } = await starApi.createKnowledgeBase({ name: name.trim(), description: description.trim() })
-      setCreating(false)
-      setName('')
-      setDescription('')
-      bases.reload()
-      setSelected(base.id)
-    } catch (error) {
-      toast('error', starErrorText(error))
-    }
+  const create = async (fields: KnowledgeBaseFields) => {
+    const { base } = await starApi.createKnowledgeBase(fields)
+    setCreating(false)
+    bases.reload()
+    setSelected(base.id)
   }
 
   return (
@@ -205,13 +276,7 @@ export function KnowledgePage() {
           )}
         </>
       )}
-      <Modal open={creating} onClose={() => setCreating(false)} title="新建知识库" width={460}
-        footer={<div className="flex w-full justify-end gap-2"><button type="button" onClick={() => setCreating(false)} className="h-8 rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 text-[13px]">取消</button><button type="button" disabled={!name.trim()} onClick={() => void create()} className="h-8 rounded-[var(--radius-md)] bg-[var(--color-btn-primary-bg)] px-3 text-[13px] font-medium text-[var(--color-btn-primary-fg)] disabled:opacity-50">创建</button></div>}>
-        <div className="space-y-3 text-[13px]">
-          <input autoFocus value={name} onChange={event => setName(event.target.value)} placeholder="名称，例如：产品手册" className="h-9 w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 outline-none" />
-          <textarea value={description} onChange={event => setDescription(event.target.value)} rows={3} placeholder="用途说明（可选）" className="w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2 outline-none" />
-        </div>
-      </Modal>
+      {creating ? <KnowledgeBaseForm title="新建知识库" submitLabel="创建" onClose={() => setCreating(false)} onSubmit={create} /> : null}
     </StarPageShell>
   )
 }
