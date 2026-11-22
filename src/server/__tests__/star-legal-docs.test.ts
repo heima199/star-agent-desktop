@@ -102,6 +102,8 @@ describe('GET /api/star/legal', () => {
 describe('GET /api/star/update', () => {
   const saved = { config: process.env.CLAUDE_CONFIG_DIR, base: process.env.CC_HAHA_STAR_BASE_URL, secret: process.env.CC_HAHA_STAR_APP_SECRET, arch: process.env.CC_HAHA_HOST_ARCH }
   const restore = (name: string, value: string | undefined) => { if (value === undefined) delete process.env[name]; else process.env[name] = value }
+  const winArm64 = { hasUpdate: true, version: '1.1.0', downloadUrl: 'https://cdn.example.com/STAR-Agent-1.1.0-win-arm64.exe', releaseNotes: '新芯片', mandatory: false, publishedAt: 1_793_000_000 }
+  let published: Record<string, unknown> = winArm64
   let queries: string[] = []
   let service: ReturnType<typeof Bun.serve>
   let configDir = ''
@@ -116,7 +118,7 @@ describe('GET /api/star/update', () => {
       fetch(request) {
         const url = new URL(request.url)
         queries.push(`${url.pathname}${url.search}`)
-        return Response.json({ hasUpdate: true, version: '1.1.0', downloadUrl: 'https://cdn.example.com/STAR-Agent-1.1.0-win-arm64.exe', releaseNotes: '新芯片', mandatory: false, publishedAt: 1_793_000_000 })
+        return Response.json(published)
       },
     })
     configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'star-update-'))
@@ -134,6 +136,7 @@ describe('GET /api/star/update', () => {
   })
   beforeEach(() => {
     queries = []
+    published = winArm64
   })
 
   it('asks for the installer of the chip the Electron host reports', async () => {
@@ -149,6 +152,19 @@ describe('GET /api/star/update', () => {
     expect(queries).toEqual(['/api/desktop/update/latest?platform=win&arch=arm64'])
   })
 
+  // The console answers every Mac with the Apple-chip dmg, and 1.2.0 renamed
+  // the installers (STAR-Agent- became PRIVO-STAR-WORK-).
+  it('hands an Intel Mac the x64 dmg although the console answers with the Apple-chip one', async () => {
+    process.env.CC_HAHA_HOST_ARCH = 'x64'
+    published = { ...winArm64, version: '1.2.0', downloadUrl: 'https://cdn.example.com/desktop-installers/202611/ab12cd/PRIVO-STAR-WORK-1.2.0-mac-arm64.dmg' }
+    const response = await call('?platform=mac')
+    expect((await response.json()) as { version: string; downloadUrl: string }).toMatchObject({
+      version: '1.2.0',
+      downloadUrl: 'https://cdn.example.com/desktop-installers/202611/ab12cd/PRIVO-STAR-WORK-1.2.0-mac-x64.dmg',
+    })
+    expect(queries).toEqual(['/api/desktop/update/latest?platform=mac&arch=x64'])
+  })
+
   it('falls back to the arch the server was built for', async () => {
     delete process.env.CC_HAHA_HOST_ARCH
     await call('?platform=mac')
@@ -162,6 +178,20 @@ describe('GET /api/star/update', () => {
     expect(starHostArch({}, 'arm64')).toBe('arm64')
     expect(starHostArch({ CC_HAHA_HOST_ARCH: ' AARCH64 ' }, 'x64')).toBe('arm64')
     expect(starHostArch({}, 'ia32')).toBeNull()
+  })
+
+  // The pattern used to spell out STAR-Agent-, so the renamed installers of
+  // 1.2.0 no longer matched and Intel Macs were sent the Apple-chip dmg.
+  it('points an Intel Mac at the x64 dmg whatever the product part of the file name is', () => {
+    const folder = 'https://cdn.example.com/desktop-installers/202611/ab12cd/'
+    expect(starInstallerForChip(`${folder}PRIVO-STAR-WORK-1.2.0-mac-arm64.dmg`, 'x64')).toBe(`${folder}PRIVO-STAR-WORK-1.2.0-mac-x64.dmg`)
+    expect(starInstallerForChip(`${folder}PRIVO-STAR-WORK-1.2.0-mac-arm64.zip?sign=1#top`, 'x64')).toBe(`${folder}PRIVO-STAR-WORK-1.2.0-mac-x64.zip?sign=1#top`)
+    expect(starInstallerForChip(`${folder}Some.Other.Name-2.0.0-beta.1-mac-arm64.DMG`, 'x64')).toBe(`${folder}Some.Other.Name-2.0.0-beta.1-mac-x64.DMG`)
+    expect(starInstallerForChip(`${folder}PRIVO-STAR-WORK-1.2.0-mac-arm64.dmg`, 'arm64')).toBe(`${folder}PRIVO-STAR-WORK-1.2.0-mac-arm64.dmg`)
+    // Not the Apple-chip installer: a folder of that name, the x64 build itself, Windows.
+    expect(starInstallerForChip(`${folder}builds-mac-arm64.dmg/readme.html`, 'x64')).toBe(`${folder}builds-mac-arm64.dmg/readme.html`)
+    expect(starInstallerForChip(`${folder}PRIVO-STAR-WORK-1.2.0-mac-x64.dmg`, 'x64')).toBe(`${folder}PRIVO-STAR-WORK-1.2.0-mac-x64.dmg`)
+    expect(starInstallerForChip(`${folder}PRIVO-STAR-WORK-1.2.0-win-x64.exe`, 'arm64')).toBe(`${folder}PRIVO-STAR-WORK-1.2.0-win-x64.exe`)
   })
 
   // The console ignores the chip: an Intel Mac must not be sent the Apple-chip dmg.

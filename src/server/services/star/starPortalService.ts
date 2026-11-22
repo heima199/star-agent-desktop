@@ -219,13 +219,16 @@ export function starHostArch(env: NodeJS.ProcessEnv = process.env, arch: string 
  * The console's update pointer picks one installer per platform and ignores
  * the chip, so an Intel Mac is offered the Apple-chip dmg, which it cannot
  * run. Every release publishes both macOS builds side by side
- * (STAR-Agent-<version>-mac-x64.dmg next to -mac-arm64.dmg), so that one case
- * is pointed at its sibling. Windows is left alone: the x64 installer also
- * runs on ARM64 Windows.
+ * (<product>-<version>-mac-x64.dmg next to -mac-arm64.dmg), so that one case
+ * is pointed at its sibling. Only the `-mac-arm64` ending of the file name is
+ * matched: the product part changed in 1.2.0 (STAR-Agent- became
+ * PRIVO-STAR-WORK-), and a pattern that spelled it out stopped matching, which
+ * sent Intel Macs the Apple-chip dmg again. Windows is left alone: the x64
+ * installer also runs on ARM64 Windows.
  */
 export function starInstallerForChip(downloadUrl: string, arch: string | null): string {
   if (arch !== 'x64') return downloadUrl
-  return downloadUrl.replace(/(\/STAR-Agent-[^/?#]+-mac)-arm64(\.(?:dmg|zip))(?=$|[?#])/i, '$1-x64$2')
+  return downloadUrl.replace(/(\/[^/?#]+-mac)-arm64(\.(?:dmg|zip))(?=$|[?#])/i, '$1-x64$2')
 }
 
 /**
