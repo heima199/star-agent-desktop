@@ -1,6 +1,7 @@
 import { TextArea } from '@/components/ui/TextArea'
 import { dateTimeInZone, zonedDateTimeToIso, formatTaskDate } from '@/lib/scheduledTask'
 import { reconcileRuntimeSelection, resolveDefaultRuntimeSelection } from '@/lib/runtimeSelection'
+import { STAR_PROVIDER_PRESET_ID, policyOffersProvider, useModelPolicy } from '@/lib/modelPolicy'
 import { useProviderStore } from '@/stores/providerStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useState, useEffect } from 'react'
@@ -21,8 +22,8 @@ import { ImPlatformLogo } from '@/components/im/ImPlatformLogo'
 import { useTranslation } from '../../i18n'
 import { describeCron, isValidCron, parseCron, type FrequencyKey } from '../../lib/cronDescribe'
 import { getSessionSeedWorkDir } from '../../lib/sessionWorkspace'
-import type { CronTask, TaskNotificationPolicy } from '../../types/task'
 import { sessionTitleLabel } from '../../lib/sessionTitle'
+import type { CronTask, TaskNotificationPolicy } from '../../types/task'
 
 type NotificationChannel = 'desktop' | 'telegram' | 'feishu'
 
@@ -79,6 +80,7 @@ function buildCron(
 
 export function NewTaskModal({ open, onClose, editTask, template }: Props) {
   const t = useTranslation()
+  const modelPolicy = useModelPolicy()
   const { createTask, updateTask } = useTaskStore()
   const sessions = useSessionStore((s) => s.sessions)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
@@ -185,13 +187,21 @@ export function NewTaskModal({ open, onClose, editTask, template }: Props) {
       )
       const providers = useProviderStore.getState()
       const settings = useSettingsStore.getState()
-      const defaultRuntime = needsStandaloneRuntime && !model
+      const resolvedDefault = needsStandaloneRuntime && !model
         ? reconcileRuntimeSelection(resolveDefaultRuntimeSelection(
           providers.activeId, settings.activeProviderName, providers.providers, settings.currentModel?.id,
         ), {
           providers: providers.providers, activeId: providers.activeId, hasLoadedProviders: providers.hasLoadedProviders,
           currentModelId: settings.currentModel?.id, defaultEffortLevel: settings.effortLevel,
         })
+        : undefined
+      // Where the policy offers no model yet (STAR-only before sign-in) the
+      // selector shows none, and there is nothing to record. Recording the
+      // fallback would pin the task to Claude official for good: an omitted
+      // provider follows the default of the day the task runs, `null` does not.
+      const starProviderId = providers.providers.find(provider => provider.presetId === STAR_PROVIDER_PRESET_ID)?.id ?? null
+      const defaultRuntime = resolvedDefault && policyOffersProvider(modelPolicy, resolvedDefault.providerId, starProviderId)
+        ? resolvedDefault
         : undefined
       const schedule = frequency === 'once'
         ? { kind: 'once' as const, runAt: runAtIso!, timeZone }

@@ -1865,6 +1865,19 @@ describe('ModelSelector under the star-only policy', () => {
     expect(screen.getByRole('button', { name: 'Select model' })).toBeInTheDocument()
   })
 
+  it('does not take Claude official for the STAR provider nobody has signed in to yet', () => {
+    useSettingsStore.setState({ locale: 'en' })
+    useProviderStore.setState({ activeId: null, hasLoadedProviders: true, isLoading: false, providers: [] })
+    useStarStore.setState({ status: null, loginOpen: false })
+
+    // Claude official is the `null` provider, and a STAR provider that does not
+    // exist has no id either: a choice recorded for one must not pass as the other.
+    renderStarOnly(<ModelSelector runtimeSelection={{ providerId: null, modelId: 'official-fixture' }} onRuntimeSelectionChange={vi.fn()} />)
+
+    expect(screen.getByRole('button', { name: 'Sign in to STAR to use models' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /official-fixture/ })).not.toBeInTheDocument()
+  })
+
   it('asks a signed-out user to sign in to STAR instead of configuring a provider', async () => {
     useSettingsStore.setState({ locale: 'en' })
     useProviderStore.setState({ activeId: 'own-api', hasLoadedProviders: true, isLoading: false, providers: [customProvider] })

@@ -8,6 +8,7 @@ import { useProviderStore } from '../../stores/providerStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useTaskStore } from '../../stores/taskStore'
+import { ModelPolicyProvider } from '../../lib/modelPolicy'
 import { invalidateRecentProjectsCache, setCachedRecentProjects } from '../../lib/recentProjectsCache'
 
 afterEach(() => {
@@ -41,6 +42,49 @@ describe('NewTaskModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
     await waitFor(() => expect(createTask).toHaveBeenCalledOnce())
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'provider-a', model: 'provider-fast' }))
+  })
+
+  describe('under the star-only policy', () => {
+    async function createWithoutOpeningTheSelector() {
+      useSessionStore.setState({ activeSessionId: 'project-session', sessions: [{ id: 'project-session', title: 'Project', createdAt: '', modifiedAt: '', messageCount: 0, projectPath: '/workspace/project', projectRoot: '/workspace/project', workDir: '/workspace/project', workDirExists: true }] })
+      const createTask = vi.fn(async (_task: unknown) => {})
+      useTaskStore.setState({ createTask })
+      useAdapterStore.setState({ fetchConfig: vi.fn(async () => {}), config: {} })
+      render(<ModelPolicyProvider value="star-only"><NewTaskModal open onClose={vi.fn()} /></ModelPolicyProvider>)
+      fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'Morning check' } })
+      fireEvent.change(screen.getByPlaceholderText(/Look at the commits/i), { target: { value: 'Check the fixture.' } })
+      const selector = screen.getByRole('button', { name: /Sign in to STAR to use models|star-main/ })
+      fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
+      await waitFor(() => expect(createTask).toHaveBeenCalledOnce())
+      return { selector, task: createTask.mock.calls[0]![0] as { model?: unknown; providerId?: unknown } }
+    }
+
+    it('records no model for a task created before anybody has signed in', async () => {
+      useSettingsStore.setState({ locale: 'en', currentModel: { id: 'official-fixture', name: 'official-fixture', description: '', context: '' } })
+      useProviderStore.setState({ providers: [], activeId: null, hasLoadedProviders: true, isLoading: true })
+
+      const { selector, task } = await createWithoutOpeningTheSelector()
+
+      // The selector offers no model, so none is recorded. An omitted provider
+      // follows the default of the day the task runs; `null` is Claude official,
+      // which this policy never offers and a later sign-in would not replace.
+      expect(selector).toHaveTextContent('Sign in to STAR to use models')
+      expect(task).toMatchObject({ name: 'Morning check' })
+      expect(task.model).toBeUndefined()
+      expect(task.providerId).toBeUndefined()
+    })
+
+    it('records the STAR default once somebody has signed in', async () => {
+      useSettingsStore.setState({ locale: 'en', currentModel: { id: 'star-main', name: 'star-main', description: '', context: '' }, activeProviderName: 'STAR' })
+      useProviderStore.setState({
+        providers: [{ id: 'star', presetId: 'star-saas', name: 'STAR', apiKey: 'fixture', baseUrl: 'http://127.0.0.1:1', apiFormat: 'openai_chat', models: { main: 'star-main', haiku: '', sonnet: '', opus: '' } }],
+        activeId: 'star', hasLoadedProviders: true, isLoading: true,
+      })
+
+      const { task } = await createWithoutOpeningTheSelector()
+
+      expect(task).toMatchObject({ providerId: 'star', model: 'star-main' })
+    })
   })
 
   it('creates scheduled tasks with a provider-scoped model selection', async () => {

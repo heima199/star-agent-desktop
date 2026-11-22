@@ -26,3 +26,19 @@ export function useModelPolicy(): ModelPolicy {
 
 /** Saved providers made from this preset are STAR's own model service. */
 export const STAR_PROVIDER_PRESET_ID = 'star-saas'
+
+/**
+ * Whether the policy offers models of this provider.
+ *
+ * Under `star-only` that is the STAR provider alone, which exists only once
+ * somebody has signed in. Claude official is the `null` provider, so a missing
+ * STAR provider must never be compared with it as an id: before sign-in the
+ * policy offers nothing.
+ */
+export function policyOffersProvider(
+  policy: ModelPolicy,
+  providerId: string | null,
+  starProviderId: string | null,
+): boolean {
+  return policy !== 'star-only' || (starProviderId !== null && providerId === starProviderId)
+}

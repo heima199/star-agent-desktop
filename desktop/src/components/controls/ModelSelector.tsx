@@ -52,7 +52,7 @@ import { MobileBottomSheet } from '@/components/ui/MobileBottomSheet'
 import { SearchField } from '@/components/ui/SearchField'
 import { ReasoningEffortPopover } from './ReasoningEffortPopover'
 import { StarModelPanel } from './StarModelPanel'
-import { useModelPolicy } from '../../lib/modelPolicy'
+import { policyOffersProvider, useModelPolicy } from '../../lib/modelPolicy'
 import { useUIStore } from '../../stores/uiStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import {
@@ -644,7 +644,7 @@ export const ModelSelector = forwardRef<ModelSelectorHandle, Props>(function Mod
   const activeRuntimeSelection = resolvedRuntimeSelection && (
     controlledRuntimeSelection || runtimeSelection ||
     providerChoices.some((choice) => choice.providerId === resolvedRuntimeSelection.providerId)
-  ) && (!starOnly || resolvedRuntimeSelection.providerId === starProviderId)
+  ) && (!starOnly || policyOffersProvider('star-only', resolvedRuntimeSelection.providerId, starProviderId))
     ? resolvedRuntimeSelection
     : null
 
